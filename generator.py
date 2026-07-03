@@ -349,6 +349,22 @@ class Hunyuan3DShapeV21Generator(BaseGenerator):
         tmp_dir = Path(tempfile.mkdtemp())
         in_glb  = tmp_dir / "shape.glb"
         in_png  = tmp_dir / "cond.png"
+
+        # Decimate the shape mesh before painting. At high octree resolution the
+        # raw marching-cubes mesh is enormous (~2.6M faces at 512), and the paint
+        # pipeline UV-unwraps with xatlas — on a mesh that dense that produces a
+        # tiny-triangle atlas (~1 texel/triangle) and a speckled/checkerboard
+        # texture. Upstream avoids this by decimating to ~40k faces first (its
+        # use_remesh path, which is pure trimesh/pymeshlab — no Blender). We do the
+        # same in-process, and fall back to the raw mesh if decimation errors.
+        try:
+            if hasattr(mesh, "faces") and len(mesh.faces) > 50000:
+                _n0 = len(mesh.faces)
+                mesh = mesh.simplify_quadric_decimation(40000)
+                print(f"[{self.MODEL_ID}] decimated {_n0} -> {len(mesh.faces)} faces before texturing")
+        except Exception as exc:
+            print(f"[{self.MODEL_ID}] mesh decimation skipped ({exc}); texturing the raw mesh")
+
         mesh.export(str(in_glb))
         image.save(str(in_png))
 
@@ -360,8 +376,21 @@ class Hunyuan3DShapeV21Generator(BaseGenerator):
         # no-op, so trimesh then mis-read that file as GLB ("incorrect header on
         # GLB file"). Give it a temp ".obj" and move the produced ".glb" to out_path.
         tex_obj = str(tmp_dir / "textured.obj")
+        # paint_pipeline() is one long blocking call with no sub-progress, so the
+        # bar would dead-stop at 74% for many minutes (the multiview diffusion +
+        # the CPU-bound cv2.inpaint / bake stretch report nothing). Creep the bar
+        # 74 -> 94 on a daemon thread — exactly like the shape stage above — so it
+        # never looks hung. Purely cosmetic; does not touch the compute.
+        self._report(progress_cb, 74, "Painting textures…")
+        paint_stop = threading.Event()
+        if progress_cb:
+            pt = threading.Thread(
+                target=smooth_progress,
+                args=(progress_cb, 74, 94, "Painting textures…", paint_stop),
+                daemon=True,
+            )
+            pt.start()
         try:
-            self._report(progress_cb, 74, "Painting textures…")
             paint_pipeline(
                 mesh_path=str(in_glb),
                 image_path=str(in_png),
@@ -378,6 +407,7 @@ class Hunyuan3DShapeV21Generator(BaseGenerator):
             except OSError:
                 shutil.move(produced_glb, out_path)
         finally:
+            paint_stop.set()
             del paint_pipeline
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
@@ -405,10 +435,116 @@ class Hunyuan3DShapeV21Generator(BaseGenerator):
         # jobs. Patch bpy out so texturing never depends on Blender. Idempotent.
         self._patch_out_bpy(paint_src)
 
+        # Install the extension's pure-torch GPU accelerations (batched SR,
+        # push-pull inpaint, RealESRGAN device pin). Each rewired call site falls
+        # back to the original CPU path on error, so this only affects speed,
+        # never correctness. Idempotent.
+        self._patch_gpu_accel(paint_src)
+
         self._report(progress_cb, 62, "Building paint native modules…")
         self._build_paint_extensions(paint_src)
         self._ensure_realesrgan(paint_src)
         return paint_src
+
+    def _patch_gpu_accel(self, paint_src: Path) -> None:
+        """Ship eb_accel.py next to the vendored paint code and rewire three call
+        sites to the extension's pure-torch GPU helpers. Idempotent; each patch
+        is guarded by a marker so a re-download re-applies cleanly and a running
+        install is never double-patched."""
+        import shutil
+
+        helper = Path(__file__).resolve().parent / "eb_accel.py"
+        if not helper.exists():
+            print(f"[{self.MODEL_ID}] eb_accel.py not found next to generator.py; skipping GPU accel")
+            return
+        try:
+            shutil.copyfile(helper, paint_src / "eb_accel.py")
+        except OSError as exc:
+            print(f"[{self.MODEL_ID}] could not copy eb_accel.py: {exc}")
+            return
+
+        # 1. Batched SR — replace the per-image SR loop + the buggy resize loop.
+        tgp = paint_src / "textureGenPipeline.py"
+        if tgp.exists():
+            text = tgp.read_text(encoding="utf-8")
+            old = (
+                '        for i in range(len(enhance_images["albedo"])):\n'
+                '            enhance_images["albedo"][i] = self.models["super_model"](enhance_images["albedo"][i])\n'
+                '            enhance_images["mr"][i] = self.models["super_model"](enhance_images["mr"][i])\n'
+                '\n'
+                '        ###########  Bake  ##########\n'
+                '        for i in range(len(enhance_images)):\n'
+                '            enhance_images["albedo"][i] = enhance_images["albedo"][i].resize(\n'
+                '                (self.config.render_size, self.config.render_size)\n'
+                '            )\n'
+                '            enhance_images["mr"][i] = enhance_images["mr"][i].resize((self.config.render_size, self.config.render_size))'
+            )
+            new = (
+                '        # GPU: batched RealESRGAN + on-GPU resize (extension patch)\n'
+                '        import eb_accel\n'
+                '        enhance_images["albedo"] = eb_accel.super_resolve_batch(\n'
+                '            self.models["super_model"], enhance_images["albedo"], self.config.render_size)\n'
+                '        enhance_images["mr"] = eb_accel.super_resolve_batch(\n'
+                '            self.models["super_model"], enhance_images["mr"], self.config.render_size)\n'
+                '\n'
+                '        ###########  Bake  ##########'
+            )
+            if "eb_accel.super_resolve_batch" not in text and old in text:
+                tgp.write_text(text.replace(old, new), encoding="utf-8")
+                print(f"[{self.MODEL_ID}] patched batched SR into textureGenPipeline.py")
+
+        # 2. Push-pull inpaint — replace only the cv2 NS pass (keep meshVerticeInpaint).
+        mr = paint_src / "DifferentiableRenderer" / "MeshRender.py"
+        if mr.exists():
+            text = mr.read_text(encoding="utf-8")
+            old = '            texture_np = cv2.inpaint((texture_np * 255).astype(np.uint8), 255 - mask, 3, cv2.INPAINT_NS)'
+            new = (
+                '            import eb_accel  # GPU push-pull hole-fill; keeps meshVerticeInpaint above, falls back to cv2\n'
+                '            texture_np = eb_accel.inpaint_fill_gpu(texture_np, mask)'
+            )
+            if "eb_accel.inpaint_fill_gpu" not in text and old in text:
+                mr.write_text(text.replace(old, new), encoding="utf-8")
+                print(f"[{self.MODEL_ID}] patched push-pull inpaint into MeshRender.py")
+
+        # 3. Pin RealESRGAN to an explicit device (no silent fp16-on-CPU crawl).
+        isu = paint_src / "utils" / "image_super_utils.py"
+        if isu.exists():
+            text = isu.read_text(encoding="utf-8")
+            old = (
+                '        model = RRDBNet(num_in_ch=3, num_out_ch=3, num_feat=64, num_block=23, num_grow_ch=32, scale=4)\n'
+                '        upsampler = RealESRGANer(\n'
+                '            scale=4,\n'
+                '            model_path=config.realesrgan_ckpt_path,\n'
+                '            dni_weight=None,\n'
+                '            model=model,\n'
+                '            tile=0,\n'
+                '            tile_pad=10,\n'
+                '            pre_pad=0,\n'
+                '            half=True,\n'
+                '            gpu_id=None,\n'
+                '        )'
+            )
+            new = (
+                '        import torch\n'
+                '        use_cuda = torch.cuda.is_available()\n'
+                '        device = torch.device(getattr(config, "device", "cuda") if use_cuda else "cpu")\n'
+                '        model = RRDBNet(num_in_ch=3, num_out_ch=3, num_feat=64, num_block=23, num_grow_ch=32, scale=4)\n'
+                '        upsampler = RealESRGANer(\n'
+                '            scale=4,\n'
+                '            model_path=config.realesrgan_ckpt_path,\n'
+                '            dni_weight=None,\n'
+                '            model=model,\n'
+                '            tile=0,\n'
+                '            tile_pad=10,\n'
+                '            pre_pad=0,\n'
+                '            half=use_cuda,\n'
+                '            device=device,\n'
+                '            gpu_id=None,\n'
+                '        )'
+            )
+            if "use_cuda = torch.cuda.is_available()" not in text and old in text:
+                isu.write_text(text.replace(old, new), encoding="utf-8")
+                print(f"[{self.MODEL_ID}] pinned RealESRGAN device in image_super_utils.py")
 
     @staticmethod
     def _patch_out_bpy(paint_src: Path) -> None:
