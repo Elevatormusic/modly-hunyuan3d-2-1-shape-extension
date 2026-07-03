@@ -1,0 +1,20 @@
+# Python virtual environment — Modly builds this from setup.py (Repair / Install
+# from GitHub). It's ~8 GB and machine-specific; never commit it.
+venv/
+.venv/
+
+# Python caches & native/build artifacts
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+*.so
+*.pyd
+
+# Modly local-link marker (points at a machine-specific path)
+.modly-local
+
+# OS / editor cruft
+.DS_Store
+Thumbs.db

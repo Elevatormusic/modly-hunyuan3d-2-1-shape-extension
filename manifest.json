@@ -1,0 +1,113 @@
+{
+  "id": "hunyuan3d-2-1-shape",
+  "name": "Hunyuan3D 2.1 Shape (Full)",
+  "type": "model",
+  "source": "https://github.com/Elevatormusic/modly-hunyuan3d-2-1-shape-extension",
+  "description": "Full-size Hunyuan3D-2.1 (3.3B params, fp16 ckpt). High-fidelity image-to-mesh geometry with an optional PBR texture pass (shape → paint, run sequentially). Shape needs ~10 GB VRAM; textures need ~21 GB plus a C++/CUDA build toolchain.",
+  "version": "1.2.0",
+  "author": "elevatormusic",
+  "generator_class": "Hunyuan3DShapeV21Generator",
+  "tags": ["image-to-3d", "shape", "high-fidelity"],
+  "nodes": [
+    {
+      "id": "generate",
+      "name": "Generate Mesh",
+      "input": "image",
+      "output": "mesh",
+      "hf_repo": "tencent/Hunyuan3D-2.1",
+      "download_check": "hunyuan3d-dit-v2-1",
+      "hf_include_prefixes": [
+        "hunyuan3d-dit-v2-1/"
+      ],
+      "params_schema": [
+        {
+          "id": "num_inference_steps",
+          "label": "Quality",
+          "type": "select",
+          "default": 50,
+          "options": [
+            { "value": 30, "label": "Fast" },
+            { "value": 50, "label": "Balanced" },
+            { "value": 75, "label": "High" }
+          ],
+          "tooltip": "Number of diffusion steps. More steps = better quality but slower."
+        },
+        {
+          "id": "octree_resolution",
+          "label": "Mesh Resolution",
+          "type": "select",
+          "default": 384,
+          "options": [
+            { "value": 256, "label": "Low" },
+            { "value": 384, "label": "Medium" },
+            { "value": 512, "label": "High" }
+          ],
+          "tooltip": "Octree resolution for mesh reconstruction. Higher = more detail, more VRAM, slower."
+        },
+        {
+          "id": "guidance_scale",
+          "label": "Guidance Scale",
+          "type": "float",
+          "default": 5.0,
+          "min": 1.0,
+          "max": 10.0,
+          "step": 0.5,
+          "tooltip": "Classifier-free guidance strength. Higher = closer to the input image."
+        },
+        {
+          "id": "target_faces",
+          "label": "Decimate (for CAD/print)",
+          "type": "select",
+          "default": 0,
+          "options": [
+            { "value": 0, "label": "Off (full density)" },
+            { "value": 50000, "label": "50k faces" },
+            { "value": 20000, "label": "20k faces" },
+            { "value": 10000, "label": "10k faces" }
+          ],
+          "tooltip": "Reduce polygon count on export. Helps downstream mesh-to-solid conversion (e.g. Fusion 360 Convert Mesh)."
+        },
+        {
+          "id": "seed",
+          "label": "Seed",
+          "type": "int",
+          "default": -1,
+          "min": -1,
+          "max": 4294967295,
+          "tooltip": "Seed for reproducibility. Set to -1 for a random seed."
+        },
+        {
+          "id": "enable_texture",
+          "label": "Generate textures (PBR)",
+          "type": "select",
+          "default": 0,
+          "options": [
+            { "value": 0, "label": "No (shape only)" },
+            { "value": 1, "label": "Yes (paint PBR textures)" }
+          ],
+          "tooltip": "Paint PBR textures after the shape. Needs ~21 GB VRAM, a big first-run download, and a C++/CUDA build toolchain. Textures are ignored by CAD/STEP export."
+        },
+        {
+          "id": "texture_resolution",
+          "label": "Texture view resolution",
+          "type": "select",
+          "default": 512,
+          "options": [
+            { "value": 512, "label": "512 (faster)" },
+            { "value": 768, "label": "768 (sharper)" }
+          ],
+          "tooltip": "Per-view render resolution for texture generation. Higher = sharper, more VRAM/time."
+        },
+        {
+          "id": "max_num_view",
+          "label": "Texture views",
+          "type": "int",
+          "default": 6,
+          "min": 6,
+          "max": 9,
+          "tooltip": "Number of camera views painted and baked. More views = better coverage, slower."
+        }
+      ]
+    }
+  ]
+}
