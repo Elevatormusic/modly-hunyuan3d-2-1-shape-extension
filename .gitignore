@@ -15,6 +15,13 @@ dist/
 # Modly local-link marker (points at a machine-specific path)
 .modly-local
 
+# Internal design docs / specs / plans / drafts — kept local, never published
+private/
+
+# BPT neural-retopo sub-venv + weights (provisioned lazily on first use, multi-GB)
+bpt_runner/venv/
+bpt_runner/weights/
+
 # OS / editor cruft
 .DS_Store
 Thumbs.db
