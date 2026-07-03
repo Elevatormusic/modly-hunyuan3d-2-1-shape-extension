@@ -42,6 +42,22 @@ class TestDenseSampling(unittest.TestCase):
         self.assertGreater(np.median(dots), 0.98)
 
 
+def _ridge_highpoly(height=0.15, n=48):
+    """A fine tent/ridge over [0,1]^2 peaking at x=0.5 (z=height), edges z=0."""
+    xs = np.linspace(0, 1, n)
+    ys = np.linspace(0, 1, n)
+    gx, gy = np.meshgrid(xs, ys)
+    gz = height * (1.0 - np.abs(2 * gx - 1))
+    verts = np.stack([gx.ravel(), gy.ravel(), gz.ravel()], axis=1)
+    faces = []
+    for j in range(n - 1):
+        for i in range(n - 1):
+            a = j * n + i
+            faces.append([a, a + 1, a + n])
+            faces.append([a + 1, a + n + 1, a + n])
+    return trimesh.Trimesh(vertices=verts, faces=np.array(faces), process=False)
+
+
 class TestBakeEndToEnd(unittest.TestCase):
     def _write_uv_glb(self, path):
         v, f, uv = unit_uv_quad()
@@ -64,6 +80,22 @@ class TestBakeEndToEnd(unittest.TestCase):
             arr = np.asarray(Image.open(png).convert("RGB")).reshape(-1, 3)
             covered = arr[(arr != 0).any(1)]
             self.assertTrue(np.allclose(covered.mean(0), [128, 128, 255], atol=12))
+
+    def test_ridge_detail_direction(self):
+        # A ridge peaking at x=0.5 baked onto a flat quad (tangent U = +X):
+        # left slope normal.x<0 -> R<128; right slope normal.x>0 -> R>128.
+        # Catches handedness/sign inversion that the flat identity test cannot.
+        with tempfile.TemporaryDirectory() as d:
+            glb = os.path.join(d, "low.glb")
+            self._write_uv_glb(glb)
+            hi = _ridge_highpoly(height=0.15, n=48)
+            normal_bake.bake_normal_map(hi, glb, size=128)
+            arr = np.asarray(Image.open(glb[:-4] + "_normal.png").convert("RGB")).astype(float)
+            W = arr.shape[1]
+            left_r = arr[:, : W // 3, 0].mean()
+            right_r = arr[:, 2 * W // 3:, 0].mean()
+            self.assertLess(left_r, 118)     # left slope tilts -X
+            self.assertGreater(right_r, 138)  # right slope tilts +X
 
     def test_normaltexture_and_normal_attribute_survive(self):
         with tempfile.TemporaryDirectory() as d:
