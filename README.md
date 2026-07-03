@@ -24,6 +24,18 @@ Turn on **Generate textures (PBR)**. The extension runs shape first, frees the s
 
 If the toolchain is missing, texturing fails with a clear error — **shape generation is unaffected**. Textures are **discarded** when converting to a STEP solid or Fusion Form (CAD has no surface textures); use them for renders, game assets, previews.
 
+### Mesh cleanup + normal-map detail (texture pass)
+
+The raw shape mesh is a dense marching-cubes surface (~2.6M faces at high resolution). Before painting, it's cleaned into a UV-friendly base — you choose how with **Mesh cleanup**:
+
+- **Isotropic** (default) — uniform-triangle remesh; clean, even topology.
+- **Regular** — quadric decimation (fastest).
+- **BPT neural** — Tencent's [BPT](https://github.com/Tencent-Hunyuan/bpt) artist-topology retopology (~4k faces, cleanest edge flow). First use downloads ~4 GB into an isolated sub-environment and takes a few minutes per mesh; if it's unavailable it falls back to isotropic.
+
+Because cleanup lowers the polygon count, fine surface detail would normally be lost. With **Bake normal map** on (the default), a tangent-space normal map is baked from the full-detail mesh onto the clean base, so grooves, panel lines, and vents survive as shading detail — a clean, light mesh that still looks detailed. The result is a standard glTF PBR set (albedo + metallic/roughness + normal). The bake runs on the CPU and adds a few seconds.
+
+> **Tip:** export **GLB** to keep the maps — Modly's OBJ export drops textures. Baking is skipped automatically (with a logged note) if anything goes wrong, so a generation never fails because of it.
+
 ## How it differs from the Hunyuan3D-2 Mini extension
 
 | | Mini | This (2.1 Full) |
@@ -62,6 +74,8 @@ If the toolchain is missing, texturing fails with a clear error — **shape gene
 - **Generate textures (PBR)** — enable the paint pass (see prerequisites above)
 - **Texture view resolution** — 512 / 768 per-view render size
 - **Texture views** — number of camera views painted/baked (6–9)
+- **Mesh cleanup** — how the shape mesh is cleaned before texturing: Isotropic (default) / Regular / BPT neural (see above)
+- **Bake normal map** — bake dense-mesh detail onto the clean base as a tangent-space normal map (on by default)
 
 ## Upstream sources
 

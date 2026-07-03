@@ -9,7 +9,10 @@ Notes vs. the Hunyuan3D-2 Mini extension this is modelled on:
     NOT a diffusers-style .safetensors folder.
   * 2.1 uses the restructured `hy3dshape` package, loaded via
     `Hunyuan3DDiTFlowMatchingPipeline.from_single_file(ckpt_path, config_path, ...)`.
-  * This is a SHAPE-ONLY extension: no texture/paint pass.
+  * Shape stage runs in-app; an optional PBR paint pass builds native modules on
+    first use. The paint path also offers a mesh-cleanup mode (regular quadric /
+    isotropic remesh / BPT neural retopo) and a tangent-space normal-map bake that
+    transfers the dense mesh's detail onto the clean base.
 """
 from __future__ import annotations   # keep annotations as strings so the module
                                      # imports without heavy deps (PIL/torch) present
