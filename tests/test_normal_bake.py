@@ -97,6 +97,22 @@ class TestBakeEndToEnd(unittest.TestCase):
             self.assertLess(left_r, 118)     # left slope tilts -X
             self.assertGreater(right_r, 138)  # right slope tilts +X
 
+    def test_opposed_surface_rejected_to_flat(self):
+        # A dense surface just above the low quad but facing DOWN (normal -Z) is a
+        # wrong-surface (back-face) hit; the reject must fall back to the low +Z normal
+        # -> flat (128,128,255), NOT an inverted (128,128,~0) bump.
+        with tempfile.TemporaryDirectory() as d:
+            glb = os.path.join(d, "low.glb")
+            self._write_uv_glb(glb)
+            v = np.array([[0, 0, 0.02], [1, 0, 0.02], [1, 1, 0.02], [0, 1, 0.02]], float)
+            f = np.array([[0, 2, 1], [0, 3, 2]], np.int64)  # reversed winding -> normal -Z
+            dense_down = trimesh.Trimesh(vertices=v, faces=f, process=False)
+            self.assertLess(dense_down.face_normals[0][2], 0)  # confirm it faces -Z
+            normal_bake.bake_normal_map(dense_down, glb, size=64)
+            arr = np.asarray(Image.open(glb[:-4] + "_normal.png").convert("RGB")).reshape(-1, 3)
+            covered = arr[(arr != 0).any(1)]
+            self.assertGreater(covered[:, 2].mean(), 220)  # B ~ 255 (flat), not inverted
+
     def test_normaltexture_and_normal_attribute_survive(self):
         with tempfile.TemporaryDirectory() as d:
             glb = os.path.join(d, "low.glb")

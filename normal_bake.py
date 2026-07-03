@@ -58,8 +58,14 @@ def rasterize_uv_atlas(verts, faces, uv, vertex_normals, size=2048):
     return pos, nrm, mask
 
 
-def sample_dense_normals(dense, pos_map, mask, max_dist_frac=0.05):
-    """For each covered texel, the dense mesh's SMOOTH normal at its closest point."""
+def sample_dense_normals(dense, pos_map, mask, low_nrm=None, max_dist_frac=0.05):
+    """For each covered texel, the dense mesh's SMOOTH normal at its closest point.
+
+    When `low_nrm` is given, reject wrong-surface hits on concave/thin-wall meshes:
+    a closest point that is too far (> max_dist_frac * bbox diagonal) or whose dense
+    normal OPPOSES the low normal (back-face snap) falls back to the low normal, so a
+    bad correspondence bakes flat rather than an inverted bump.
+    """
     import open3d as o3d
     size = pos_map.shape[0]
     world = np.zeros((size, size, 3), np.float32)
@@ -77,6 +83,7 @@ def sample_dense_normals(dense, pos_map, mask, max_dist_frac=0.05):
     ans = scene.compute_closest_points(o3d.core.Tensor(query))
     prim = ans["primitive_ids"].numpy().astype(np.int64)
     bary = ans["primitive_uvs"].numpy().astype(np.float64)  # (u, v) -> weights for v1, v2
+    closest = ans["points"].numpy().astype(np.float32)
     tri = df[prim].astype(np.int64)
     w1, w2 = bary[:, 0], bary[:, 1]
     w0 = 1.0 - w1 - w2
@@ -86,6 +93,16 @@ def sample_dense_normals(dense, pos_map, mask, max_dist_frac=0.05):
     ln = np.linalg.norm(n, axis=1, keepdims=True)
     ln[ln == 0] = 1.0
     n = n / ln
+
+    if low_nrm is not None:
+        low_q = np.asarray(low_nrm, np.float32).reshape(-1, 3)[idx]
+        diag = float(np.linalg.norm(dense.bounds[1] - dense.bounds[0]))
+        dist = np.linalg.norm(query - closest, axis=1)
+        opposed = np.sum(n * low_q, axis=1) < 0.0
+        toofar = dist > (max_dist_frac * max(diag, 1e-9))
+        bad = opposed | toofar
+        n[bad] = low_q[bad]
+
     flat = world.reshape(-1, 3)
     flat[idx] = n.astype(np.float32)
     return flat.reshape(size, size, 3)
@@ -174,7 +191,7 @@ def bake_normal_map(dense, low_glb_path, size=2048):
         uv = np.asarray(low.visual.uv, np.float64)
         pos, low_nrm, mask = rasterize_uv_atlas(
             low.vertices, low.faces, uv, low.vertex_normals, size)
-        world_nrm = sample_dense_normals(dense, pos, mask)
+        world_nrm = sample_dense_normals(dense, pos, mask, low_nrm=low_nrm)
         rgb = encode_tangent_space(low_nrm, world_nrm, mask)
         rgb = dilate_map(rgb, mask)
         png = low_glb_path[:-4] + "_normal.png"
