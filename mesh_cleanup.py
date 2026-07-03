@@ -25,26 +25,34 @@ def _quadric(mesh: trimesh.Trimesh, target_faces: int) -> trimesh.Trimesh:
 
 def _isotropic(mesh: trimesh.Trimesh, target_faces: int) -> trimesh.Trimesh:
     import pymeshlab
-    # Remeshing controls EDGE LENGTH, not face count. Estimate a target edge length
-    # from the current mesh, then express it as a % of the bbox diagonal (required
-    # wrapper type). n_faces ~ (2 * surface_area) / (sqrt(3)/2 * edge^2) for a
-    # triangulated surface, so edge ~ sqrt(4*area / (sqrt(3) * n_faces)).
-    diag = float(np.linalg.norm(mesh.bounds[1] - mesh.bounds[0]))
-    area = float(mesh.area)
-    edge = float(np.sqrt(4.0 * area / (np.sqrt(3.0) * max(target_faces, 1))))
-    pct = max(0.1, min(50.0, 100.0 * edge / max(diag, 1e-9)))
+    # Remeshing controls EDGE LENGTH, not face count, so a mis-estimated edge could
+    # otherwise run away to millions of faces (a tiny targetlen splits forever).
+    # Bound it three ways: clamp the request, pre-reduce dense input, floor the pct,
+    # and decimate to budget if the remesh still overshoots.
+    target = int(max(500, min(int(target_faces), 300000)))  # bound the request
+    work = mesh
+    if len(work.faces) > target * 3:                        # pre-reduce (speed + bound)
+        work = _quadric(work, target * 2)
+    # n_faces ~ 4*area / (sqrt(3) * edge^2)  ->  edge ~ sqrt(4*area / (sqrt(3)*n)).
+    diag = float(np.linalg.norm(work.bounds[1] - work.bounds[0]))
+    area = float(work.area)
+    edge = float(np.sqrt(4.0 * area / (np.sqrt(3.0) * max(target, 1))))
+    pct = float(np.clip(100.0 * edge / max(diag, 1e-9), 0.3, 50.0))  # floor bounds fineness
     ms = pymeshlab.MeshSet()
     ms.add_mesh(pymeshlab.Mesh(
-        vertex_matrix=np.asarray(mesh.vertices, np.float64),
-        face_matrix=np.asarray(mesh.faces, np.int32),
+        vertex_matrix=np.asarray(work.vertices, np.float64),
+        face_matrix=np.asarray(work.faces, np.int32),
     ))
     ms.meshing_isotropic_explicit_remeshing(
-        iterations=8,
+        iterations=6,
         targetlen=pymeshlab.PercentageValue(pct),
     )
     out = ms.current_mesh()
-    return trimesh.Trimesh(
+    res = trimesh.Trimesh(
         vertices=out.vertex_matrix(), faces=out.face_matrix(), process=False)
+    if len(res.faces) > target * 3:                         # final safety on overshoot
+        res = _quadric(res, target)
+    return res
 
 
 def clean_mesh(mesh, mode: str = "isotropic", target_faces: int = 40000) -> trimesh.Trimesh:

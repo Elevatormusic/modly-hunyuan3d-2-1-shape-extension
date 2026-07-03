@@ -32,6 +32,15 @@ class TestCleanMesh(unittest.TestCase):
         self.assertIsInstance(lo, trimesh.Trimesh)
         self.assertGreater(len(lo.faces), 0)
 
+    def test_isotropic_bounded_for_huge_target(self):
+        # A huge target must not run remeshing away to millions of faces / minutes.
+        import time
+        t0 = time.time()
+        lo = mesh_cleanup.clean_mesh(icosphere(3), "isotropic", 10_000_000)
+        self.assertGreater(len(lo.faces), 0)
+        self.assertLess(len(lo.faces), 500_000)   # bounded, no runaway
+        self.assertLess(time.time() - t0, 30)      # and fast
+
     def test_bad_mode_falls_back_no_raise(self):
         lo = mesh_cleanup.clean_mesh(box_dense(), "nonsense", 500)
         self.assertIsInstance(lo, trimesh.Trimesh)
