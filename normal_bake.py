@@ -89,3 +89,101 @@ def sample_dense_normals(dense, pos_map, mask, max_dist_frac=0.05):
     flat = world.reshape(-1, 3)
     flat[idx] = n.astype(np.float32)
     return flat.reshape(size, size, 3)
+
+
+def encode_tangent_space(low_nrm, world_nrm, mask):
+    """Transform world-space dense normals into each texel's tangent frame (+Y encode).
+
+    Frame is built from the interpolated low normal + a world reference (T = ref x N,
+    B = N x T); a glTF viewer recomputes MikkTSpace tangents at render, so an exact
+    per-texel UV-gradient tangent is not required — only a stable, right-handed frame.
+    """
+    up = np.array([0.0, 1.0, 0.0])
+    N = low_nrm
+    ref = np.where(np.abs(N[..., 1:2]) > 0.99, np.array([1.0, 0.0, 0.0]), up)
+    T = np.cross(ref, N)
+    T /= (np.linalg.norm(T, axis=2, keepdims=True) + 1e-9)
+    B = np.cross(N, T)
+    nt = np.stack([
+        np.sum(world_nrm * T, axis=2),
+        np.sum(world_nrm * B, axis=2),
+        np.sum(world_nrm * N, axis=2),
+    ], axis=2)
+    ln = np.linalg.norm(nt, axis=2, keepdims=True)
+    ln[ln == 0] = 1.0
+    nt = nt / ln
+    rgb = ((nt * 0.5 + 0.5) * 255.0).clip(0, 255).astype(np.uint8)
+    rgb[~mask] = 0
+    return rgb
+
+
+def dilate_map(rgb, mask, iters=6):
+    """Grow covered texels a few px past the atlas charts to kill UV-seam bleed."""
+    from scipy import ndimage
+    out = rgb.copy()
+    m = mask.copy()
+    for _ in range(iters):
+        grown = ndimage.binary_dilation(m)
+        edge = grown & ~m
+        if not edge.any():
+            break
+        den = ndimage.uniform_filter(m.astype(np.float32), size=3) * 9
+        for c in range(3):
+            ch = out[..., c].astype(np.float32)
+            ch[~m] = 0
+            num = ndimage.uniform_filter(ch, size=3) * 9
+            filled = np.where(den > 0, num / np.maximum(den, 1), 0)
+            out[..., c] = np.where(edge, filled.clip(0, 255).astype(np.uint8), out[..., c])
+        m = grown
+    return out
+
+
+def attach_normal_texture(glb_path, normal_png):
+    """Attach a normal map to an existing GLB, forcing NORMAL export (no TANGENT)."""
+    import trimesh
+    from PIL import Image
+    scene = trimesh.load(glb_path, process=False)
+    geom = (list(scene.geometry.values())[0]
+            if isinstance(scene, trimesh.Scene) else scene)
+    mat = geom.visual.material
+    if not isinstance(mat, trimesh.visual.material.PBRMaterial):
+        to_pbr = getattr(mat, "to_pbr", None)
+        mat = to_pbr() if to_pbr else trimesh.visual.material.PBRMaterial()
+    mat.normalTexture = Image.open(normal_png)
+    uv = geom.visual.uv
+    geom.visual = trimesh.visual.TextureVisuals(uv=uv, material=mat)
+    _ = geom.vertex_normals  # force NORMAL attribute on export
+    geom.export(glb_path, include_normals=True)
+
+
+def bake_normal_map(dense, low_glb_path, size=2048):
+    """Bake dense-mesh detail onto the painted low base as a tangent-space normal map.
+
+    Returns True on success (writes <base>_normal.png + attaches normalTexture),
+    False on any failure (leaves the textured GLB unchanged).
+    """
+    try:
+        import trimesh
+        from PIL import Image
+        scene = trimesh.load(low_glb_path, process=False)
+        low = (trimesh.util.concatenate(tuple(scene.geometry.values()))
+               if isinstance(scene, trimesh.Scene) else scene)
+        if low.visual is None or getattr(low.visual, "uv", None) is None:
+            print("[normal_bake] low mesh has no UVs; skipping")
+            return False
+        uv = np.asarray(low.visual.uv, np.float64)
+        pos, low_nrm, mask = rasterize_uv_atlas(
+            low.vertices, low.faces, uv, low.vertex_normals, size)
+        world_nrm = sample_dense_normals(dense, pos, mask)
+        rgb = encode_tangent_space(low_nrm, world_nrm, mask)
+        rgb = dilate_map(rgb, mask)
+        png = low_glb_path[:-4] + "_normal.png"
+        Image.fromarray(rgb, "RGB").save(png)
+        attach_normal_texture(low_glb_path, png)
+        print(f"[normal_bake] wrote {png} and attached normalTexture")
+        return True
+    except Exception as exc:
+        import traceback
+        traceback.print_exc()
+        print(f"[normal_bake] bake failed ({exc}); leaving textured GLB unchanged")
+        return False

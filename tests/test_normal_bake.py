@@ -1,6 +1,9 @@
+import os
+import tempfile
 import unittest
 import numpy as np
 import trimesh
+from PIL import Image
 from tests._fixtures import unit_uv_quad, icosphere
 import normal_bake
 
@@ -37,6 +40,41 @@ class TestDenseSampling(unittest.TestCase):
         ref = pts / np.linalg.norm(pts, axis=1, keepdims=True)
         dots = np.sum(got * ref, axis=1)
         self.assertGreater(np.median(dots), 0.98)
+
+
+class TestBakeEndToEnd(unittest.TestCase):
+    def _write_uv_glb(self, path):
+        v, f, uv = unit_uv_quad()
+        m = trimesh.Trimesh(vertices=v, faces=f, process=False)
+        mat = trimesh.visual.material.PBRMaterial(baseColorFactor=[200, 200, 200, 255])
+        m.visual = trimesh.visual.TextureVisuals(uv=uv, material=mat)
+        _ = m.vertex_normals
+        m.export(path, include_normals=True)
+
+    def test_identity_bake_is_flat_map(self):
+        # baking a flat quad's own plane -> tangent normal ~ (0,0,1) -> rgb ~ (128,128,255)
+        with tempfile.TemporaryDirectory() as d:
+            glb = os.path.join(d, "low.glb")
+            self._write_uv_glb(glb)
+            flat = trimesh.Trimesh(*unit_uv_quad()[:2], process=False)
+            ok = normal_bake.bake_normal_map(flat, glb, size=64)
+            self.assertTrue(ok)
+            png = glb[:-4] + "_normal.png"
+            self.assertTrue(os.path.exists(png))
+            arr = np.asarray(Image.open(png).convert("RGB")).reshape(-1, 3)
+            covered = arr[(arr != 0).any(1)]
+            self.assertTrue(np.allclose(covered.mean(0), [128, 128, 255], atol=12))
+
+    def test_normaltexture_and_normal_attribute_survive(self):
+        with tempfile.TemporaryDirectory() as d:
+            glb = os.path.join(d, "low.glb")
+            self._write_uv_glb(glb)
+            flat = trimesh.Trimesh(*unit_uv_quad()[:2], process=False)
+            normal_bake.bake_normal_map(flat, glb, size=64)
+            reloaded = trimesh.load(glb, process=False)
+            geom = (list(reloaded.geometry.values())[0]
+                    if isinstance(reloaded, trimesh.Scene) else reloaded)
+            self.assertIsNotNone(geom.visual.material.normalTexture)
 
 
 if __name__ == "__main__":
