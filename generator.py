@@ -152,6 +152,8 @@ class Hunyuan3DShapeV21Generator(BaseGenerator):
         enable_texture = int(params.get("enable_texture", 0)) == 1
         tex_resolution = int(params.get("texture_resolution", 512))
         max_num_view   = int(params.get("max_num_view", 6))
+        mesh_mode      = str(params.get("mesh_mode", "isotropic"))
+        bake_normal    = int(params.get("bake_normal_map", 1)) == 1
         seed           = int(params.get("seed", -1))
         if seed == -1:
             seed = random.randint(0, 2**32 - 1)
@@ -192,7 +194,11 @@ class Hunyuan3DShapeV21Generator(BaseGenerator):
 
         self._check_cancelled(cancel_event)
 
-        if target_faces > 0 and hasattr(mesh, "faces") and len(mesh.faces) > target_faces:
+        # The CAD/print decimation applies to the shape-only export path; when texturing
+        # we keep the full-detail mesh so the normal bake has detail to transfer (the
+        # texture path does its own mesh_mode cleanup in _run_texture).
+        if (target_faces > 0 and not enable_texture
+                and hasattr(mesh, "faces") and len(mesh.faces) > target_faces):
             self._report(progress_cb, shape_end - 2, "Decimating mesh…")
             mesh = self._decimate(mesh, target_faces)
 
@@ -213,6 +219,7 @@ class Hunyuan3DShapeV21Generator(BaseGenerator):
                 mesh, image, str(path),
                 tex_resolution=tex_resolution, max_num_view=max_num_view,
                 progress_cb=progress_cb,
+                mesh_mode=mesh_mode, bake_normal_map=bake_normal,
             )
             self.load()  # restore shape model for the next run
         else:
@@ -315,6 +322,7 @@ class Hunyuan3DShapeV21Generator(BaseGenerator):
     def _run_texture(
         self, mesh, image, out_path: str,
         tex_resolution: int = 512, max_num_view: int = 6, progress_cb=None,
+        mesh_mode: str = "isotropic", bake_normal_map: bool = True,
     ) -> None:
         """
         Paint PBR textures onto the shape mesh and write a textured GLB to
@@ -350,20 +358,19 @@ class Hunyuan3DShapeV21Generator(BaseGenerator):
         in_glb  = tmp_dir / "shape.glb"
         in_png  = tmp_dir / "cond.png"
 
-        # Decimate the shape mesh before painting. At high octree resolution the
-        # raw marching-cubes mesh is enormous (~2.6M faces at 512), and the paint
-        # pipeline UV-unwraps with xatlas — on a mesh that dense that produces a
-        # tiny-triangle atlas (~1 texel/triangle) and a speckled/checkerboard
-        # texture. Upstream avoids this by decimating to ~40k faces first (its
-        # use_remesh path, which is pure trimesh/pymeshlab — no Blender). We do the
-        # same in-process, and fall back to the raw mesh if decimation errors.
+        # Clean the shape mesh into a paint-friendly base. The raw marching-cubes mesh
+        # is enormous (~2.6M faces at 512); xatlas-unwrapping it directly yields a
+        # tiny-triangle atlas (~1 texel/triangle) and a speckled texture. mesh_mode
+        # picks the strategy (regular quadric / isotropic remesh / bpt neural retopo);
+        # each falls back to quadric on error. Keep the full-detail mesh as the source
+        # for the normal-map bake so cleanup doesn't cost us fine detail.
+        import mesh_cleanup
+        dense_for_bake = mesh
         try:
-            if hasattr(mesh, "faces") and len(mesh.faces) > 50000:
-                _n0 = len(mesh.faces)
-                mesh = mesh.simplify_quadric_decimation(40000)
-                print(f"[{self.MODEL_ID}] decimated {_n0} -> {len(mesh.faces)} faces before texturing")
+            mesh = mesh_cleanup.clean_mesh(mesh, mesh_mode, 40000)
+            print(f"[{self.MODEL_ID}] cleanup mode={mesh_mode} -> {len(mesh.faces)} faces")
         except Exception as exc:
-            print(f"[{self.MODEL_ID}] mesh decimation skipped ({exc}); texturing the raw mesh")
+            print(f"[{self.MODEL_ID}] cleanup failed ({exc}); texturing the raw mesh")
 
         mesh.export(str(in_glb))
         image.save(str(in_png))
@@ -406,6 +413,14 @@ class Hunyuan3DShapeV21Generator(BaseGenerator):
                 os.replace(produced_glb, out_path)
             except OSError:
                 shutil.move(produced_glb, out_path)
+            # Bake the dense mesh's fine detail onto the clean base as a normal map.
+            if bake_normal_map:
+                try:
+                    import normal_bake
+                    self._report(progress_cb, 95, "Baking normal map…")
+                    normal_bake.bake_normal_map(dense_for_bake, out_path, size=2048)
+                except Exception as exc:
+                    print(f"[{self.MODEL_ID}] normal bake skipped ({exc})")
         finally:
             paint_stop.set()
             del paint_pipeline
@@ -926,5 +941,28 @@ class Hunyuan3DShapeV21Generator(BaseGenerator):
                 "min": 6,
                 "max": 9,
                 "tooltip": "Number of camera views painted and baked. More views = better coverage, slower.",
+            },
+            {
+                "id": "mesh_mode",
+                "label": "Mesh cleanup",
+                "type": "select",
+                "default": "isotropic",
+                "options": [
+                    {"value": "isotropic", "label": "Isotropic (uniform, default)"},
+                    {"value": "regular", "label": "Regular (quadric)"},
+                    {"value": "bpt", "label": "BPT neural (~4k, slow, big download)"},
+                ],
+                "tooltip": "How the shape mesh is cleaned before texturing. Isotropic = uniform triangles; Regular = quadric decimation; BPT = neural artist topology (first use downloads ~4 GB and takes a few minutes; falls back to isotropic if unavailable).",
+            },
+            {
+                "id": "bake_normal_map",
+                "label": "Bake normal map",
+                "type": "select",
+                "default": 1,
+                "options": [
+                    {"value": 1, "label": "Yes (transfer dense detail)"},
+                    {"value": 0, "label": "No"},
+                ],
+                "tooltip": "Bake a tangent-space normal map from the full-detail mesh onto the clean base so fine detail survives cleanup. Adds a few seconds. Only applies when textures are on.",
             },
         ]
