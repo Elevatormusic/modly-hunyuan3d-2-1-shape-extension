@@ -429,13 +429,29 @@ class Hunyuan3DShapeV21Generator(BaseGenerator):
             "try:\n    import bpy\nexcept Exception:\n    bpy = None",
             1,
         )
-        # 2) append a trimesh-based convert_obj_to_glb that shadows the bpy one
+        # 2) append a trimesh-based convert_obj_to_glb that shadows the bpy one.
+        #    Force a non-metallic PBR material with a white base-color factor:
+        #    trimesh's OBJ import leaves metallicFactor unset, which glTF treats
+        #    as 1.0 (FULLY METALLIC) — that renders gray in viewers without an
+        #    environment map even though the baked albedo texture is present.
+        #    metallicFactor=0 lets the albedo show as a normal diffuse surface.
         text += (
             "\n\n# --- bpy-free patch ---\n"
-            "def convert_obj_to_glb(obj_path, glb_path, *args, **kwargs):\n"
-            "    \"\"\"Convert a (textured) OBJ to GLB with trimesh instead of Blender.\"\"\"\n"
+            "def convert_obj_to_glb(obj_path, glb_path, *args, **kwargs):  # noqa: F811\n"
+            "    \"\"\"OBJ->GLB via trimesh (no Blender); force non-metallic so the baked albedo shows.\"\"\"\n"
             "    import trimesh\n"
+            "    from trimesh.visual.material import PBRMaterial\n"
             "    scene = trimesh.load(obj_path, process=False)\n"
+            "    geoms = scene.geometry.values() if hasattr(scene, 'geometry') else [scene]\n"
+            "    for g in geoms:\n"
+            "        v = getattr(g, 'visual', None)\n"
+            "        mat = getattr(v, 'material', None)\n"
+            "        img = (getattr(mat, 'baseColorTexture', None) or getattr(mat, 'image', None)) if mat else None\n"
+            "        uv = getattr(v, 'uv', None)\n"
+            "        if img is not None and uv is not None:\n"
+            "            g.visual = trimesh.visual.TextureVisuals(\n"
+            "                uv=uv, material=PBRMaterial(baseColorTexture=img,\n"
+            "                    baseColorFactor=[255, 255, 255, 255], metallicFactor=0.0, roughnessFactor=1.0))\n"
             "    scene.export(glb_path)\n"
             "    return True\n"
         )
