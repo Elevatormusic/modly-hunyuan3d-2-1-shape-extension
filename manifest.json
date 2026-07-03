@@ -3,8 +3,8 @@
   "name": "Hunyuan3D 2.1 Shape (Full)",
   "type": "model",
   "source": "https://github.com/Elevatormusic/modly-hunyuan3d-2-1-shape-extension",
-  "description": "Full-size Hunyuan3D-2.1 (3.3B params, fp16 ckpt). High-fidelity image-to-mesh geometry with an optional PBR texture pass (shape → paint, run sequentially). Shape needs ~10 GB VRAM; textures need ~21 GB plus a C++/CUDA build toolchain.",
-  "version": "1.2.0",
+  "description": "Full-size Hunyuan3D-2.1 (3.3B params, fp16 ckpt). High-fidelity image-to-mesh geometry with an optional PBR texture pass (shape → paint, run sequentially). The texture pass adds a selectable mesh-cleanup mode (isotropic / quadric / BPT neural retopo) and a tangent-space normal-map bake that transfers dense detail onto the clean base. Shape needs ~10 GB VRAM; textures need ~21 GB plus a C++/CUDA build toolchain.",
+  "version": "1.3.0",
   "author": "elevatormusic",
   "generator_class": "Hunyuan3DShapeV21Generator",
   "tags": ["image-to-3d", "shape", "high-fidelity"],
@@ -106,6 +106,29 @@
           "min": 6,
           "max": 9,
           "tooltip": "Number of camera views painted and baked. More views = better coverage, slower."
+        },
+        {
+          "id": "mesh_mode",
+          "label": "Mesh cleanup",
+          "type": "select",
+          "default": "isotropic",
+          "options": [
+            { "value": "isotropic", "label": "Isotropic (uniform, default)" },
+            { "value": "regular", "label": "Regular (quadric)" },
+            { "value": "bpt", "label": "BPT neural (~4k, slow, big download)" }
+          ],
+          "tooltip": "How the shape mesh is cleaned before texturing. Isotropic = uniform triangles; Regular = quadric decimation; BPT = neural artist topology (first use downloads ~4 GB and takes a few minutes; falls back to isotropic if unavailable)."
+        },
+        {
+          "id": "bake_normal_map",
+          "label": "Bake normal map",
+          "type": "select",
+          "default": 1,
+          "options": [
+            { "value": 1, "label": "Yes (transfer dense detail)" },
+            { "value": 0, "label": "No" }
+          ],
+          "tooltip": "Bake a tangent-space normal map from the full-detail mesh onto the clean base so fine detail survives cleanup. Adds a few seconds. Only applies when textures are on."
         }
       ]
     }
