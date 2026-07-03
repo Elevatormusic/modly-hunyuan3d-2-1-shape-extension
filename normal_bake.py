@@ -56,3 +56,36 @@ def rasterize_uv_atlas(verts, faces, uv, vertex_normals, size=2048):
     ln[ln == 0] = 1.0
     nrm = nrm / ln
     return pos, nrm, mask
+
+
+def sample_dense_normals(dense, pos_map, mask, max_dist_frac=0.05):
+    """For each covered texel, the dense mesh's SMOOTH normal at its closest point."""
+    import open3d as o3d
+    size = pos_map.shape[0]
+    world = np.zeros((size, size, 3), np.float32)
+    idx = np.where(mask.ravel())[0]
+    if idx.size == 0:
+        return world
+    query = pos_map.reshape(-1, 3)[idx].astype(np.float32)
+
+    dv = np.asarray(dense.vertices, np.float32)
+    df = np.asarray(dense.faces, np.uint32)
+    vnorm = np.asarray(dense.vertex_normals, np.float32)
+
+    scene = o3d.t.geometry.RaycastingScene()
+    scene.add_triangles(o3d.core.Tensor(dv), o3d.core.Tensor(df))
+    ans = scene.compute_closest_points(o3d.core.Tensor(query))
+    prim = ans["primitive_ids"].numpy().astype(np.int64)
+    bary = ans["primitive_uvs"].numpy().astype(np.float64)  # (u, v) -> weights for v1, v2
+    tri = df[prim].astype(np.int64)
+    w1, w2 = bary[:, 0], bary[:, 1]
+    w0 = 1.0 - w1 - w2
+    n = (w0[:, None] * vnorm[tri[:, 0]]
+         + w1[:, None] * vnorm[tri[:, 1]]
+         + w2[:, None] * vnorm[tri[:, 2]])
+    ln = np.linalg.norm(n, axis=1, keepdims=True)
+    ln[ln == 0] = 1.0
+    n = n / ln
+    flat = world.reshape(-1, 3)
+    flat[idx] = n.astype(np.float32)
+    return flat.reshape(size, size, 3)
