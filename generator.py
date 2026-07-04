@@ -739,6 +739,31 @@ class Hunyuan3DShapeV21Generator(BaseGenerator):
                 mvu.write_text(text.replace(old, new), encoding="utf-8")
                 print(f"[{self.MODEL_ID}] patched low_vram_mode CPU offload into multiview_utils.py")
 
+        # 6. Free the diffusion net before SR/bake (quality-per-VRAM). The 6-view UNet2p5D
+        # (+ dual UNet + DINOv2, ~15-18 GB) is unused after the views are produced, but it
+        # stays resident through the bake, so a large texture_size stacks on it and blows
+        # past 24 GB. Delete it right after the view images are copied out -> the SR + bake
+        # get the whole card, so texture_size 4096 is affordable. Single-use pipeline
+        # (built fresh + deleted per generation), so nothing calls it again.
+        tgp = paint_src / "textureGenPipeline.py"
+        if tgp.exists():
+            text = tgp.read_text(encoding="utf-8")
+            anchor = '        enhance_images["mr"] = copy.deepcopy(multiviews_pbr["mr"])\n'
+            if "Free the multiview diffusion net" not in text and anchor in text:
+                inject = anchor + (
+                    "\n"
+                    "        # Free the multiview diffusion net (UNet2p5D + dual UNet + DINOv2)\n"
+                    "        # before SR/bake (extension patch): unused after the views are made.\n"
+                    "        try:\n"
+                    "            if \"multiview_model\" in self.models:\n"
+                    "                del self.models[\"multiview_model\"]\n"
+                    "                torch.cuda.empty_cache()\n"
+                    "        except Exception:\n"
+                    "            pass\n"
+                )
+                tgp.write_text(text.replace(anchor, inject), encoding="utf-8")
+                print(f"[{self.MODEL_ID}] patched free-diffusion-before-bake into textureGenPipeline.py")
+
     @staticmethod
     def _patch_out_bpy(paint_src: Path) -> None:
         """Remove the hard dependency on `bpy` (Blender) from the paint source.
