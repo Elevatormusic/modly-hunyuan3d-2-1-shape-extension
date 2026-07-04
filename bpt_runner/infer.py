@@ -41,6 +41,11 @@ os.environ["TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD"] = "1"
 
 SRC = os.path.join(os.path.dirname(os.path.abspath(__file__)), "_bpt_src")
 sys.path.insert(0, SRC)
+# The vendored miche encoder loads its config by a RELATIVE path
+# ('miche/shapevae-256.yaml'), so BPT must run with _bpt_src as the working
+# directory. Under Modly the cwd is the app's api dir, which broke this with a
+# FileNotFoundError. All --input/--output/--weights paths we receive are absolute.
+os.chdir(SRC)
 
 import yaml  # noqa: E402
 import torch  # noqa: E402
