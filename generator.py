@@ -635,6 +635,31 @@ class Hunyuan3DShapeV21Generator(BaseGenerator):
                 isu.write_text(text.replace(old, new), encoding="utf-8")
                 print(f"[{self.MODEL_ID}] pinned RealESRGAN device in image_super_utils.py")
 
+        # 4. Cleaner UVs — the paint calls a bare xatlas.parametrize (default 1 chart
+        # iteration -> ~150 small charts). Tune it: more chart iterations + higher cost
+        # ceiling for fewer/larger charts, and pack padding so adjacent charts can't
+        # bilinear-bleed into each other. Measured 178 -> 128 charts on a real mesh.
+        uvw = paint_src / "utils" / "uvwrap_utils.py"
+        if uvw.exists():
+            text = uvw.read_text(encoding="utf-8")
+            old = "    vmapping, indices, uvs = xatlas.parametrize(mesh.vertices, mesh.faces)"
+            new = (
+                "    _atlas = xatlas.Atlas(); _atlas.add_mesh(mesh.vertices, mesh.faces)\n"
+                "    _co = xatlas.ChartOptions()\n"
+                "    _co.max_iterations = 3\n"
+                "    _co.max_cost = 8.0\n"
+                "    _co.max_chart_area = 0.0\n"
+                "    _co.max_boundary_length = 0.0\n"
+                "    _po = xatlas.PackOptions()\n"
+                "    _po.padding = 4\n"
+                "    _po.bilinear = True\n"
+                "    _atlas.generate(chart_options=_co, pack_options=_po)\n"
+                "    vmapping, indices, uvs = _atlas.get_mesh(0)"
+            )
+            if "_atlas.get_mesh" not in text and old in text:
+                uvw.write_text(text.replace(old, new), encoding="utf-8")
+                print(f"[{self.MODEL_ID}] tuned xatlas for cleaner UVs (fewer charts + padding)")
+
     @staticmethod
     def _patch_out_bpy(paint_src: Path) -> None:
         """Remove the hard dependency on `bpy` (Blender) from the paint source.
