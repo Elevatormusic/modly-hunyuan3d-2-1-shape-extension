@@ -106,5 +106,33 @@ class TestApplyTexturePlan(unittest.TestCase):
         self.assertEqual((c.render_size, c.texture_size, c.sr_chunk), (1024, 2048, 2))
 
 
+class TestMaxTier(unittest.TestCase):
+    def test_max_reachable_via_ceiling(self):
+        p = capacity.plan_texture_memory(24, "max")
+        self.assertEqual(p.tier, "max")
+        self.assertEqual((p.render_size, p.texture_size, p.sr_chunk), (1536, 4096, 4))
+
+    def test_ceiling_high_never_gives_max(self):
+        p = capacity.plan_texture_memory(24, "high")
+        self.assertEqual(p.tier, "high")
+
+
+class TestSharedRamAllowance(unittest.TestCase):
+    def test_headroom_leg_when_ram_tight(self):
+        # 64 total, 40 available -> min(32, 40-12=28) = 28
+        self.assertAlmostEqual(capacity.shared_ram_allowance(64, 40), 28.0)
+
+    def test_fifty_percent_cap_when_ram_plentiful(self):
+        # 64 total, 64 available -> min(32, 52) = 32
+        self.assertAlmostEqual(capacity.shared_ram_allowance(64, 64), 32.0)
+
+    def test_floors_at_zero_when_no_headroom(self):
+        # 64 total, 10 available -> min(32, -2) -> clamped 0
+        self.assertEqual(capacity.shared_ram_allowance(64, 10), 0.0)
+
+    def test_bad_input_returns_zero(self):
+        self.assertEqual(capacity.shared_ram_allowance("x", 40), 0.0)
+
+
 if __name__ == "__main__":
     unittest.main()

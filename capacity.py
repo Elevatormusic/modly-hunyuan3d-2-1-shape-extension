@@ -32,19 +32,21 @@ def paint_vram(tex_resolution: int, max_num_view: int) -> float:
 TexturePlan = namedtuple(
     "TexturePlan", "render_size texture_size sr_chunk tier offload_hint warning")
 
-# tier -> (render_size, texture_size, sr_chunk), low -> high
+# tier -> (render_size, texture_size, sr_chunk), low -> high -> max
 _TEX_TIERS = {
     "low":      (1024, 1024, 1),
     "balanced": (1024, 2048, 2),
     "high":     (1536, 2048, 4),
+    "max":      (1536, 4096, 4),
 }
-_TIER_ORDER = ["low", "balanced", "high"]
-# Seed peak-VRAM (GB) per tier on a 24 GB card, shape freed. Engineering seeds,
-# pending on-device calibration (see private/runbooks/2026-07-03-texture-memory-
-# calibration.md). Anchored to the measured ~22-23.6 GB at render=2048/tex=2048/
-# chunk=4, minus per-lever deltas (render 2048->1536 ~-0.7, ->1024 ~-1.5; chunk
-# 4->2 ~-1.5, ->1 ~-2.0; texture 2048->1024 ~-0.4).
-_TEX_PEAK = {"high": 21.5, "balanced": 19.5, "low": 18.5}
+_TIER_ORDER = ["low", "balanced", "high", "max"]
+# Seed peak-VRAM (GB) per tier on a 24 GB card, shape freed AND diffusion freed before
+# the bake (free-before-bake, see the textureGenPipeline patch). Because texture_size lives
+# in the (post-free) bake stage, Max ~= High in VRAM. Engineering seeds pending on-device
+# calibration (see private/runbooks/2026-07-03-texture-memory-calibration.md). Anchored to
+# the measured ~22-23.6 GB at render=2048/tex=2048/chunk=4, minus per-lever deltas (render
+# 2048->1536 ~-0.7, ->1024 ~-1.5; chunk 4->2 ~-1.5, ->1 ~-2.0; texture 2048->1024 ~-0.4).
+_TEX_PEAK = {"high": 21.5, "balanced": 19.5, "low": 18.5, "max": 21.5}
 _TEX_MARGIN = 2.0   # WDDM/fragmentation headroom
 
 
@@ -99,6 +101,18 @@ def apply_texture_plan(conf, plan):
     conf.texture_size = plan.texture_size
     conf.sr_chunk = plan.sr_chunk
     return conf
+
+
+def shared_ram_allowance(total_gb, available_gb, headroom=12.0):
+    """GB of system RAM safe to lend the GPU as shared memory when the user opts into
+    'Use shared GPU memory'. Bounded by BOTH the Windows shared-GPU ceiling (50% of total
+    RAM) AND leaving `headroom` GB of currently-available RAM free for the OS + the paint
+    process's own growth + the paged GPU pages (which draw from the same pool). Pure."""
+    try:
+        alw = min(0.5 * float(total_gb), float(available_gb) - float(headroom))
+    except (TypeError, ValueError):
+        return 0.0
+    return max(0.0, alw)
 
 
 def vram_plan(free_gb, total_gb, enable_texture, octree_res,
