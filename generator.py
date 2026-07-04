@@ -685,6 +685,31 @@ class Hunyuan3DShapeV21Generator(BaseGenerator):
                 uvw.write_text(text.replace(old, new), encoding="utf-8")
                 print(f"[{self.MODEL_ID}] tuned xatlas for cleaner UVs (fewer charts + padding)")
 
+        # 5. Opt-in CPU offload (low_vram_mode). The paint UNet+DINO+SR floor is ~21 GB;
+        # when the user enables Low VRAM mode we swap the pipeline's `.to(device)` for
+        # diffusers' enable_model_cpu_offload() (~21 GB -> ~15 GB, slower). Guarded: any
+        # failure (e.g. the custom attn_processor's hardcoded cuda:0) falls back to the
+        # normal on-device path so a generation never breaks. Off by default.
+        mvu = paint_src / "utils" / "multiview_utils.py"
+        if mvu.exists():
+            text = mvu.read_text(encoding="utf-8")
+            old = "        self.pipeline = pipeline.to(self.device)"
+            new = (
+                "        if getattr(config, \"low_vram_mode\", False):\n"
+                "            try:\n"
+                "                pipeline.enable_model_cpu_offload()\n"
+                "                self.pipeline = pipeline\n"
+                "                print(\"[eb_accel] low VRAM mode: model CPU offload enabled\")\n"
+                "            except Exception as _e:\n"
+                "                print(f\"[eb_accel] low VRAM offload unavailable ({_e}); on-device\")\n"
+                "                self.pipeline = pipeline.to(self.device)\n"
+                "        else:\n"
+                "            self.pipeline = pipeline.to(self.device)"
+            )
+            if "low_vram_mode" not in text and old in text:
+                mvu.write_text(text.replace(old, new), encoding="utf-8")
+                print(f"[{self.MODEL_ID}] patched low_vram_mode CPU offload into multiview_utils.py")
+
     @staticmethod
     def _patch_out_bpy(paint_src: Path) -> None:
         """Remove the hard dependency on `bpy` (Blender) from the paint source.
