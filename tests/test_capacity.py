@@ -72,7 +72,7 @@ class TestPlanTextureMemory(unittest.TestCase):
         self.assertEqual(p.tier, "low")           # best effort
         self.assertTrue(p.offload_hint)
         self.assertIsNotNone(p.warning)
-        self.assertIn("VRAM", p.warning)
+        self.assertIn("available", p.warning)
 
     def test_monotonic_more_vram_never_smaller(self):
         lo = capacity.plan_texture_memory(20, "high")
