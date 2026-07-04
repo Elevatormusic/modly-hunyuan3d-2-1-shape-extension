@@ -38,10 +38,10 @@ class TestParams(unittest.TestCase):
         from generator import Hunyuan3DShapeV21Generator as G
         return {p["id"]: p for p in G.params_schema()}
 
-    def test_mesh_mode_present_default_isotropic(self):
+    def test_mesh_mode_present_default_regular(self):
         schema = self._schema()
         self.assertIn("mesh_mode", schema)
-        self.assertEqual(schema["mesh_mode"]["default"], "isotropic")
+        self.assertEqual(schema["mesh_mode"]["default"], "regular")
         values = {o["value"] for o in schema["mesh_mode"]["options"]}
         self.assertEqual(values, {"regular", "isotropic", "bpt"})
 

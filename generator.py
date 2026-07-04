@@ -177,7 +177,7 @@ class Hunyuan3DShapeV21Generator(BaseGenerator):
         enable_texture = int(params.get("enable_texture", 0)) == 1
         tex_resolution = int(params.get("texture_resolution", 512))
         max_num_view   = int(params.get("max_num_view", 6))
-        mesh_mode      = str(params.get("mesh_mode", "isotropic"))
+        mesh_mode      = str(params.get("mesh_mode", "regular"))
         bake_normal    = int(params.get("bake_normal_map", 1)) == 1
         seed           = int(params.get("seed", -1))
         if seed == -1:
@@ -1020,13 +1020,13 @@ class Hunyuan3DShapeV21Generator(BaseGenerator):
                 "id": "mesh_mode",
                 "label": "Mesh cleanup",
                 "type": "select",
-                "default": "isotropic",
+                "default": "regular",
                 "options": [
-                    {"value": "isotropic", "label": "Isotropic (uniform, default)"},
-                    {"value": "regular", "label": "Regular (quadric)"},
+                    {"value": "regular", "label": "Regular (clean connected mesh, default)"},
+                    {"value": "isotropic", "label": "Isotropic (uniform triangles; may fragment)"},
                     {"value": "bpt", "label": "BPT neural (~4k, slow, big download)"},
                 ],
-                "tooltip": "How the shape mesh is cleaned before texturing. Isotropic = uniform triangles; Regular = quadric decimation; BPT = neural artist topology (first use downloads ~4 GB and takes a few minutes; falls back to isotropic if unavailable).",
+                "tooltip": "How the shape mesh is cleaned before texturing. Regular = quadric decimation, keeps one connected shell with clean UVs (recommended). Isotropic = uniform triangles but can shatter Hunyuan's non-watertight surfaces into many UV islands (auto-falls back to Regular if it does). BPT = neural artist topology (first use downloads ~4 GB; falls back to Regular if unavailable).",
             },
             {
                 "id": "bake_normal_map",

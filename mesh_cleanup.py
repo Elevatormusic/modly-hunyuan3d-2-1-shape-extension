@@ -52,6 +52,15 @@ def _isotropic(mesh: trimesh.Trimesh, target_faces: int) -> trimesh.Trimesh:
         vertices=out.vertex_matrix(), faces=out.face_matrix(), process=False)
     if len(res.faces) > target * 3:                         # final safety on overshoot
         res = _quadric(res, target)
+    # Isotropic explicit remeshing shatters non-watertight Hunyuan surfaces into many
+    # disconnected islands (verified: 161 components), which produces fragmented, seamy
+    # UVs. If that happens, fall back to quadric, which keeps ONE connected shell.
+    try:
+        if len(res.split(only_watertight=False)) > 20:
+            print("[mesh_cleanup] isotropic fragmented the mesh; using quadric for a connected shell")
+            return _quadric(mesh, target)
+    except Exception:
+        pass
     return res
 
 
@@ -89,7 +98,7 @@ def strip_background(mesh) -> trimesh.Trimesh:
     return trimesh.util.concatenate(keep) if len(keep) > 1 else keep[0]
 
 
-def clean_mesh(mesh, mode: str = "isotropic", target_faces: int = 40000) -> trimesh.Trimesh:
+def clean_mesh(mesh, mode: str = "regular", target_faces: int = 40000) -> trimesh.Trimesh:
     hi = _as_trimesh(mesh)
     try:
         if mode == "regular":
