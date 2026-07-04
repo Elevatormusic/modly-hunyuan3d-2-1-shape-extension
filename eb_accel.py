@@ -11,10 +11,25 @@ Design rules:
 import numpy as np
 
 
+def _resolve_sr_chunk(chunk):
+    """Resolve the SR batch size: explicit arg wins, else the EB_SR_CHUNK env var
+    (set by the extension per texture-memory tier), else 4. Always >= 1."""
+    if chunk is not None:
+        try:
+            return max(1, int(chunk))
+        except (TypeError, ValueError):
+            return 4
+    import os
+    try:
+        return max(1, int(os.environ.get("EB_SR_CHUNK", "4")))
+    except (TypeError, ValueError):
+        return 4
+
+
 # --------------------------------------------------------------------------- #
 # 1. Batched RealESRGAN super-resolution (replaces the per-image SR loop)
 # --------------------------------------------------------------------------- #
-def super_resolve_batch(sr_net, pil_images, out_size, chunk=4):
+def super_resolve_batch(sr_net, pil_images, out_size, chunk=None):
     """Super-resolve a list of same-size PIL images in batched GPU forwards, then
     resize to (out_size, out_size) on the GPU, returning a list of PIL images
     (same interface the pipeline's per-image loop produced).
@@ -58,7 +73,7 @@ def super_resolve_batch(sr_net, pil_images, out_size, chunk=4):
 
         outs = []
         with torch.no_grad():
-            i, cur = 0, max(1, int(chunk))
+            i, cur = 0, _resolve_sr_chunk(chunk)
             while i < x.shape[0]:
                 try:
                     outs.append(model(x[i:i + cur]).float())
