@@ -59,7 +59,7 @@ class TestParams(unittest.TestCase):
         self.assertIn("texture_memory", schema)
         self.assertEqual(schema["texture_memory"]["default"], "balanced")
         values = {o["value"] for o in schema["texture_memory"]["options"]}
-        self.assertEqual(values, {"low", "balanced", "high"})
+        self.assertEqual(values, {"low", "balanced", "high", "max"})
 
     def test_low_vram_mode_present_default_off(self):
         schema = self._schema()
