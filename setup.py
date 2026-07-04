@@ -190,6 +190,7 @@ def setup(
         "pygltflib",
         "fast-simplification",   # backs trimesh.simplify_quadric_decimation for the decimate option
         "tqdm",
+        "psutil",                # shared-GPU-memory planner reads system RAM (capacity/generator)
     )
 
     # ------------------------------------------------------------------ #
