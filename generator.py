@@ -636,9 +636,11 @@ class Hunyuan3DShapeV21Generator(BaseGenerator):
                 print(f"[{self.MODEL_ID}] pinned RealESRGAN device in image_super_utils.py")
 
         # 4. Cleaner UVs — the paint calls a bare xatlas.parametrize (default 1 chart
-        # iteration -> ~150 small charts). Tune it: more chart iterations + higher cost
-        # ceiling for fewer/larger charts, and pack padding so adjacent charts can't
-        # bilinear-bleed into each other. Measured 178 -> 128 charts on a real mesh.
+        # iteration -> ~150 small charts). Tune it: more chart iterations + a moderate
+        # cost ceiling (max_cost=2.0 sits at xatlas's area-distortion floor, ~0.20
+        # log-std; higher costs trade distortion away for fewer charts, lower costs just
+        # add packing waste), plus pack padding so adjacent charts can't bilinear-bleed.
+        # Measured 141 charts / 0.208 distortion (vs 128 / 0.236 at the old max_cost=8).
         uvw = paint_src / "utils" / "uvwrap_utils.py"
         if uvw.exists():
             text = uvw.read_text(encoding="utf-8")
@@ -647,7 +649,7 @@ class Hunyuan3DShapeV21Generator(BaseGenerator):
                 "    _atlas = xatlas.Atlas(); _atlas.add_mesh(mesh.vertices, mesh.faces)\n"
                 "    _co = xatlas.ChartOptions()\n"
                 "    _co.max_iterations = 3\n"
-                "    _co.max_cost = 8.0\n"
+                "    _co.max_cost = 2.0\n"
                 "    _co.max_chart_area = 0.0\n"
                 "    _co.max_boundary_length = 0.0\n"
                 "    _po = xatlas.PackOptions()\n"
