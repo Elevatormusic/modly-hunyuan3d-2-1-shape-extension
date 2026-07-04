@@ -428,7 +428,7 @@ class Hunyuan3DShapeV21Generator(BaseGenerator):
         import mesh_cleanup
         dense_for_bake = mesh
         try:
-            mesh = mesh_cleanup.clean_mesh(mesh, mesh_mode, 80000)
+            mesh = mesh_cleanup.clean_mesh(mesh, mesh_mode, 50000)
             print(f"[{self.MODEL_ID}] cleanup mode={mesh_mode} -> {len(mesh.faces)} faces")
         except Exception as exc:
             print(f"[{self.MODEL_ID}] cleanup failed ({exc}); texturing the raw mesh")
