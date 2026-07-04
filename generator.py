@@ -44,6 +44,28 @@ _REALESRGAN_URL  = (
 )
 
 
+def _creep_elapsed(progress_cb, start, end, base_label, stop, interval=4.0):
+    """Progress creeper that never looks frozen during a long blocking stage.
+
+    Unlike smooth_progress (which climbs to end-2 then STOPS — looking stuck for the
+    many minutes the paint takes), this advances the percent asymptotically toward
+    `end` AND appends live elapsed time to the label, so every tick visibly moves.
+    """
+    t0 = time.time()
+    cap = end - 1
+    current = float(start)
+    progress_cb(int(current), f"{base_label} (0s)")
+    while not stop.is_set():
+        stop.wait(interval)
+        if stop.is_set():
+            break
+        current += (cap - current) * 0.12
+        el = int(time.time() - t0)
+        m, s = divmod(el, 60)
+        et = f"{m}m {s:02d}s" if m else f"{s}s"
+        progress_cb(int(current), f"{base_label} ({et})")
+
+
 def _prewarm_hf_symlink_check(repo_id: str) -> None:
     """Work around a Windows race in huggingface_hub's parallel downloader.
 
@@ -160,6 +182,22 @@ class Hunyuan3DShapeV21Generator(BaseGenerator):
         seed           = int(params.get("seed", -1))
         if seed == -1:
             seed = random.randint(0, 2**32 - 1)
+
+        # VRAM-aware preflight: cap Mesh Resolution so the shape stage fits, and warn
+        # if textures are likely to exceed free VRAM (prevents silent OOM / the
+        # near-limit "stuck" hang the user hit at ~24/24 GB).
+        if torch.cuda.is_available():
+            try:
+                import capacity
+                _free_b, _total_b = torch.cuda.mem_get_info()
+                octree_res, _vwarn = capacity.vram_plan(
+                    _free_b / 1e9, _total_b / 1e9, enable_texture,
+                    octree_res, tex_resolution, max_num_view)
+                if _vwarn:
+                    print(f"[{self.MODEL_ID}] VRAM: {_vwarn}")
+                    self._report(progress_cb, 4, _vwarn)
+            except Exception as _exc:
+                print(f"[{self.MODEL_ID}] VRAM preflight skipped ({_exc})")
 
         self._report(progress_cb, 5, "Removing background…")
         image = self._preprocess(image_bytes)
@@ -395,7 +433,7 @@ class Hunyuan3DShapeV21Generator(BaseGenerator):
         paint_stop = threading.Event()
         if progress_cb:
             pt = threading.Thread(
-                target=smooth_progress,
+                target=_creep_elapsed,
                 args=(progress_cb, 74, 94, "Painting textures…", paint_stop),
                 daemon=True,
             )
@@ -416,14 +454,20 @@ class Hunyuan3DShapeV21Generator(BaseGenerator):
                 os.replace(produced_glb, out_path)
             except OSError:
                 shutil.move(produced_glb, out_path)
-            # Bake the dense mesh's fine detail onto the clean base as a normal map.
-            if bake_normal_map:
+            # Bake the dense mesh's fine detail onto the clean base as a normal map —
+            # but NOT for BPT: it regenerates the surface, so a high->low bake
+            # misregisters and produces blotches (ship clean-but-flat instead).
+            import capacity
+            if capacity.should_bake(bake_normal_map, mesh_mode):
                 try:
                     import normal_bake
                     self._report(progress_cb, 95, "Baking normal map…")
                     normal_bake.bake_normal_map(dense_for_bake, out_path, size=2048)
                 except Exception as exc:
                     print(f"[{self.MODEL_ID}] normal bake skipped ({exc})")
+            elif bake_normal_map and mesh_mode == "bpt":
+                print(f"[{self.MODEL_ID}] BPT mesh: skipping normal bake "
+                      f"(regenerated surface would misregister the bake)")
         finally:
             paint_stop.set()
             del paint_pipeline
