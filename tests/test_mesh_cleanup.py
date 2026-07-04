@@ -47,6 +47,31 @@ class TestCleanMesh(unittest.TestCase):
         self.assertGreater(len(lo.faces), 0)
 
 
+def _open_edges(m):
+    e = np.sort(np.asarray(m.edges), axis=1)
+    _, counts = np.unique(e, axis=0, return_counts=True)
+    return int((counts == 1).sum())
+
+
+class TestMakeWatertight(unittest.TestCase):
+    def test_repairs_toward_watertight(self):
+        ico = icosphere(4)  # watertight sphere
+        rng = np.random.default_rng(0)
+        keep = np.ones(len(ico.faces), bool)
+        keep[rng.choice(len(ico.faces), 200, replace=False)] = False
+        holed = trimesh.Trimesh(ico.vertices, ico.faces[keep], process=False)
+        self.assertFalse(holed.is_watertight)
+        rep = mesh_cleanup.make_watertight(holed)
+        self.assertGreater(len(rep.faces), 0)
+        # best-effort: either fully sealed, or measurably closer to watertight
+        self.assertTrue(rep.is_watertight or _open_edges(rep) < _open_edges(holed))
+
+    def test_clean_mesh_output_is_single_shell(self):
+        # the headline fix: cleanup output is ONE component -> one clean UV island
+        lo = mesh_cleanup.clean_mesh(box_dense(), "regular", 800)
+        self.assertEqual(len(lo.split(only_watertight=False)), 1)
+
+
 class TestStripBackground(unittest.TestCase):
     def test_removes_large_ground_plane_keeps_object(self):
         obj = trimesh.creation.box(extents=(0.5, 0.6, 0.5)).subdivide().subdivide()
