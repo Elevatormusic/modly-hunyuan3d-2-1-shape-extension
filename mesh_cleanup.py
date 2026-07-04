@@ -55,6 +55,40 @@ def _isotropic(mesh: trimesh.Trimesh, target_faces: int) -> trimesh.Trimesh:
     return res
 
 
+def strip_background(mesh) -> trimesh.Trimesh:
+    """Remove large flat background/ground planes and tiny stray fragments.
+
+    Image-to-3D models (Hunyuan included) often generate a big flat slab from the
+    photo's backdrop. Left in, it dominates the mesh: isotropic remesh sizes triangles
+    by area, so the plane eats ~90% of the face budget and starves the real object.
+    Drop components that are flat AND span most of the scene AND are large; also drop
+    sub-50-face specks. No-op if there's a single component or nothing non-flat remains
+    (so a genuinely flat object — a coin, a plate — is never nuked).
+    """
+    hi = _as_trimesh(mesh)
+    try:
+        comps = hi.split(only_watertight=False)
+    except Exception:
+        return hi
+    if len(comps) <= 1:
+        return hi
+    total = len(hi.faces)
+    scene_span = float((hi.vertices.max(0) - hi.vertices.min(0)).max())
+    keep = []
+    for c in comps:
+        e = c.vertices.max(0) - c.vertices.min(0)
+        flat = (float(e.min()) / max(float(e.max()), 1e-9)) < 0.05
+        wide = float(e.max()) > 0.40 * scene_span
+        big = len(c.faces) > 0.08 * total
+        is_plane = flat and wide and big
+        tiny = len(c.faces) < 50
+        if not is_plane and not tiny:
+            keep.append(c)
+    if not keep:
+        return hi  # never return an empty mesh (e.g. a lone flat object)
+    return trimesh.util.concatenate(keep) if len(keep) > 1 else keep[0]
+
+
 def clean_mesh(mesh, mode: str = "isotropic", target_faces: int = 40000) -> trimesh.Trimesh:
     hi = _as_trimesh(mesh)
     try:

@@ -235,6 +235,20 @@ class Hunyuan3DShapeV21Generator(BaseGenerator):
 
         self._check_cancelled(cancel_event)
 
+        # Strip the ground/background plane Hunyuan generates from the photo backdrop.
+        # Left in, that flat slab is a separate ~2x2 component that dominates the mesh:
+        # isotropic remesh sizes triangles by area, so it eats ~90% of the face budget
+        # and the real object comes out starved and fragmented. Removing it up front
+        # gives the whole budget (and the normal bake) to the actual object.
+        try:
+            import mesh_cleanup
+            _n0 = len(mesh.faces) if hasattr(mesh, "faces") else 0
+            mesh = mesh_cleanup.strip_background(mesh)
+            if hasattr(mesh, "faces") and len(mesh.faces) != _n0:
+                print(f"[{self.MODEL_ID}] stripped background: {_n0} -> {len(mesh.faces)} faces")
+        except Exception as _exc:
+            print(f"[{self.MODEL_ID}] background strip skipped ({_exc})")
+
         # The CAD/print decimation applies to the shape-only export path; when texturing
         # we keep the full-detail mesh so the normal bake has detail to transfer (the
         # texture path does its own mesh_mode cleanup in _run_texture).
@@ -408,7 +422,7 @@ class Hunyuan3DShapeV21Generator(BaseGenerator):
         import mesh_cleanup
         dense_for_bake = mesh
         try:
-            mesh = mesh_cleanup.clean_mesh(mesh, mesh_mode, 40000)
+            mesh = mesh_cleanup.clean_mesh(mesh, mesh_mode, 80000)
             print(f"[{self.MODEL_ID}] cleanup mode={mesh_mode} -> {len(mesh.faces)} faces")
         except Exception as exc:
             print(f"[{self.MODEL_ID}] cleanup failed ({exc}); texturing the raw mesh")

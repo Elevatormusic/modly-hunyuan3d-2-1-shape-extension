@@ -47,5 +47,39 @@ class TestCleanMesh(unittest.TestCase):
         self.assertGreater(len(lo.faces), 0)
 
 
+class TestStripBackground(unittest.TestCase):
+    def test_removes_large_ground_plane_keeps_object(self):
+        obj = trimesh.creation.box(extents=(0.5, 0.6, 0.5)).subdivide().subdivide()
+        plane = trimesh.creation.box(extents=(2.0, 0.02, 2.0)).subdivide().subdivide()
+        plane.apply_translation([0, -0.5, 0])
+        combined = trimesh.util.concatenate([obj, plane])
+        out = mesh_cleanup.strip_background(combined)
+        self.assertLess(len(out.faces), len(combined.faces))       # plane dropped
+        self.assertGreater(len(out.faces), 0)
+        e = out.vertices.max(0) - out.vertices.min(0)
+        self.assertGreater(e.min() / e.max(), 0.2)                  # kept part is 3D, not flat
+
+    def test_single_component_unchanged(self):
+        obj = trimesh.creation.box(extents=(1, 1, 1))
+        out = mesh_cleanup.strip_background(obj)
+        self.assertEqual(len(out.faces), len(obj.faces))
+
+    def test_lone_flat_object_not_nuked(self):
+        # a genuinely flat object (e.g. a coin/plate) must survive
+        plate = trimesh.creation.box(extents=(2.0, 0.02, 2.0))
+        out = mesh_cleanup.strip_background(plate)
+        self.assertGreater(len(out.faces), 0)
+
+    def test_small_flat_detail_kept(self):
+        # a small flat panel attached near a 3D body is NOT scene-spanning -> keep it
+        body = trimesh.creation.box(extents=(1.0, 1.0, 1.0)).subdivide().subdivide()
+        panel = trimesh.creation.box(extents=(0.3, 0.02, 0.3)).subdivide().subdivide()
+        panel.apply_translation([0.8, 0, 0])
+        combined = trimesh.util.concatenate([body, panel])
+        out = mesh_cleanup.strip_background(combined)
+        # both kept (panel is not wide/large enough to look like a ground plane)
+        self.assertEqual(len(out.faces), len(combined.faces))
+
+
 if __name__ == "__main__":
     unittest.main()
