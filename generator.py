@@ -1044,6 +1044,29 @@ class Hunyuan3DShapeV21Generator(BaseGenerator):
                 "tooltip": "Number of camera views painted and baked. More views = better coverage, slower.",
             },
             {
+                "id": "texture_memory",
+                "label": "Texture memory",
+                "type": "select",
+                "default": "balanced",
+                "options": [
+                    {"value": "low", "label": "Low (smallest, softest)"},
+                    {"value": "balanced", "label": "Balanced (recommended)"},
+                    {"value": "high", "label": "High (sharpest, needs an empty GPU)"},
+                ],
+                "tooltip": "Caps the texture pass's VRAM so it can't spill into system RAM and crawl. Adaptive to free VRAM; this sets the ceiling. Balanced fits a 24 GB card with room to spare.",
+            },
+            {
+                "id": "low_vram_mode",
+                "label": "Low VRAM mode",
+                "type": "select",
+                "default": 0,
+                "options": [
+                    {"value": 0, "label": "Off"},
+                    {"value": 1, "label": "On (offload paint model to CPU)"},
+                ],
+                "tooltip": "Offloads the paint diffusion model to CPU when VRAM is tight so textures still finish on a busy GPU. Much slower — leave Off unless you get VRAM warnings.",
+            },
+            {
                 "id": "mesh_mode",
                 "label": "Mesh cleanup",
                 "type": "select",

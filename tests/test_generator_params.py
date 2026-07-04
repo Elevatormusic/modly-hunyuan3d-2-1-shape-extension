@@ -54,6 +54,27 @@ class TestParams(unittest.TestCase):
         # Pre-existing CAD/print decimation param must not be clobbered.
         self.assertIn("target_faces", self._schema())
 
+    def test_texture_memory_present_default_balanced(self):
+        schema = self._schema()
+        self.assertIn("texture_memory", schema)
+        self.assertEqual(schema["texture_memory"]["default"], "balanced")
+        values = {o["value"] for o in schema["texture_memory"]["options"]}
+        self.assertEqual(values, {"low", "balanced", "high"})
+
+    def test_low_vram_mode_present_default_off(self):
+        schema = self._schema()
+        self.assertIn("low_vram_mode", schema)
+        self.assertEqual(schema["low_vram_mode"]["default"], 0)
+
+    def test_manifest_and_schema_agree_on_new_knobs(self):
+        import json, pathlib
+        manifest = json.loads((pathlib.Path(__file__).resolve().parents[1] / "manifest.json").read_text())
+        mparams = {p["id"]: p for p in manifest["nodes"][0]["params_schema"]}
+        schema = self._schema()
+        for pid in ("texture_memory", "low_vram_mode"):
+            self.assertIn(pid, mparams)
+            self.assertEqual(mparams[pid]["default"], schema[pid]["default"])
+
 
 if __name__ == "__main__":
     unittest.main()
