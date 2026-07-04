@@ -400,6 +400,12 @@ class Hunyuan3DShapeV21Generator(BaseGenerator):
         conf.custom_pipeline       = str(paint_src / "hunyuanpaintpbr")
         conf.realesrgan_ckpt_path  = str(paint_src / "ckpt" / "RealESRGAN_x4plus.pth")
         conf.multiview_pretrained_path = _HF_REPO_ID   # downloads paintpbr subfolder
+        # Bake at the final output resolution instead of 4x supersampling. Upstream
+        # bakes at texture_size=4096 then halves to 2048 on save (downsample=True) —
+        # so 3/4 of the bake/inpaint compute is thrown away. We set texture_size to the
+        # output size and patch downsample=False (see _patch_gpu_accel): same 2048
+        # texture, ~4x faster paint stage.
+        conf.texture_size = 2048
 
         # Constructing the pipeline triggers a parallel hf_hub snapshot_download
         # of the paint weights. Prime the symlink-support check first so that
@@ -568,6 +574,13 @@ class Hunyuan3DShapeV21Generator(BaseGenerator):
             if "eb_accel.super_resolve_batch" not in text and old in text:
                 tgp.write_text(text.replace(old, new), encoding="utf-8")
                 print(f"[{self.MODEL_ID}] patched batched SR into textureGenPipeline.py")
+
+            # 1b. Skip the on-save 2x downsample so the bake runs at the output
+            # resolution (paired with conf.texture_size=2048) instead of at 2x.
+            text = tgp.read_text(encoding="utf-8")
+            if "downsample=True" in text:
+                tgp.write_text(text.replace("downsample=True", "downsample=False"), encoding="utf-8")
+                print(f"[{self.MODEL_ID}] patched save_mesh downsample=False (bake at output res)")
 
         # 2. Push-pull inpaint — replace only the cv2 NS pass (keep meshVerticeInpaint).
         mr = paint_src / "DifferentiableRenderer" / "MeshRender.py"
