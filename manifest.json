@@ -121,17 +121,6 @@
           "tooltip": "Caps the texture pass's VRAM so it can't spill into system RAM and crawl. Adaptive to free VRAM; this sets the ceiling — a busy GPU may drop a step lower to fit. Balanced targets a ~20 GB peak for 24 GB cards."
         },
         {
-          "id": "low_vram_mode",
-          "label": "Low VRAM mode",
-          "type": "select",
-          "default": 0,
-          "options": [
-            { "value": 0, "label": "Off" },
-            { "value": 1, "label": "On (offload paint model to CPU)" }
-          ],
-          "tooltip": "Offloads the paint diffusion model to CPU when VRAM is tight so textures still finish on a busy GPU. Much slower — leave Off unless you get VRAM warnings."
-        },
-        {
           "id": "use_shared_vram",
           "label": "Use shared GPU memory",
           "type": "select",

@@ -180,7 +180,6 @@ class Hunyuan3DShapeV21Generator(BaseGenerator):
         mesh_mode      = str(params.get("mesh_mode", "regular"))
         bake_normal    = int(params.get("bake_normal_map", 1)) == 1
         texture_memory = str(params.get("texture_memory", "balanced"))
-        low_vram_mode  = int(params.get("low_vram_mode", 0)) == 1
         use_shared_vram = int(params.get("use_shared_vram", 0)) == 1
         seed           = int(params.get("seed", -1))
         if seed == -1:
@@ -278,7 +277,7 @@ class Hunyuan3DShapeV21Generator(BaseGenerator):
                 tex_resolution=tex_resolution, max_num_view=max_num_view,
                 progress_cb=progress_cb,
                 mesh_mode=mesh_mode, bake_normal_map=bake_normal,
-                texture_memory=texture_memory, low_vram_mode=low_vram_mode,
+                texture_memory=texture_memory,
                 use_shared_vram=use_shared_vram,
             )
             self.load()  # restore shape model for the next run
@@ -383,7 +382,7 @@ class Hunyuan3DShapeV21Generator(BaseGenerator):
         self, mesh, image, out_path: str,
         tex_resolution: int = 512, max_num_view: int = 6, progress_cb=None,
         mesh_mode: str = "isotropic", bake_normal_map: bool = True,
-        texture_memory: str = "balanced", low_vram_mode: bool = False,
+        texture_memory: str = "balanced",
         use_shared_vram: bool = False,
     ) -> None:
         """
@@ -447,14 +446,13 @@ class Hunyuan3DShapeV21Generator(BaseGenerator):
             _plan = capacity.plan_texture_memory(
                 float("inf"), texture_memory, extra_budget_gb=_extra_budget)
         capacity.apply_texture_plan(conf, _plan)
-        conf.low_vram_mode = bool(low_vram_mode)
         os.environ["EB_SR_CHUNK"] = str(_plan.sr_chunk)   # read by eb_accel.super_resolve_batch
         if _plan.warning:
             print(f"[{self.MODEL_ID}] VRAM: {_plan.warning}")
             self._report(progress_cb, 62, _plan.warning)
         print(f"[{self.MODEL_ID}] texture_memory tier={_plan.tier} "
               f"render={_plan.render_size} texture={_plan.texture_size} sr_chunk={_plan.sr_chunk} "
-              f"shared_budget={_extra_budget:.0f}GB low_vram={conf.low_vram_mode}")
+              f"shared_budget={_extra_budget:.0f}GB")
 
         # Constructing the pipeline triggers a parallel hf_hub snapshot_download
         # of the paint weights. Prime the symlink-support check first so that
@@ -710,34 +708,6 @@ class Hunyuan3DShapeV21Generator(BaseGenerator):
             if "_atlas.get_mesh" not in text and old in text:
                 uvw.write_text(text.replace(old, new), encoding="utf-8")
                 print(f"[{self.MODEL_ID}] tuned xatlas for cleaner UVs (fewer charts + padding)")
-
-        # 5. Opt-in CPU offload (low_vram_mode). When the user enables Low VRAM mode we
-        # swap the pipeline's `.to(device)` for diffusers' enable_model_cpu_offload()
-        # (upstream reports ~21 -> ~15 GB, slower). NOTE: efficacy is UNVALIDATED here —
-        # the paint pipeline reassigns self.unet to a UNet2p5D wrapper AFTER
-        # register_modules, so accelerate's hooks may land on the orphaned bare unet and
-        # save less than hoped (see the calibration runbook, item 6). Guarded: any failure
-        # (e.g. the custom attn_processor's hardcoded cuda:0) falls back to the normal
-        # on-device path so a generation never breaks. Off by default.
-        mvu = paint_src / "utils" / "multiview_utils.py"
-        if mvu.exists():
-            text = mvu.read_text(encoding="utf-8")
-            old = "        self.pipeline = pipeline.to(self.device)"
-            new = (
-                "        if getattr(config, \"low_vram_mode\", False):\n"
-                "            try:\n"
-                "                pipeline.enable_model_cpu_offload()\n"
-                "                self.pipeline = pipeline\n"
-                "                print(\"[eb_accel] low VRAM mode: model CPU offload enabled\")\n"
-                "            except Exception as _e:\n"
-                "                print(f\"[eb_accel] low VRAM offload unavailable ({_e}); on-device\")\n"
-                "                self.pipeline = pipeline.to(self.device)\n"
-                "        else:\n"
-                "            self.pipeline = pipeline.to(self.device)"
-            )
-            if "low_vram_mode" not in text and old in text:
-                mvu.write_text(text.replace(old, new), encoding="utf-8")
-                print(f"[{self.MODEL_ID}] patched low_vram_mode CPU offload into multiview_utils.py")
 
         # 6. Free the diffusion net before SR/bake (quality-per-VRAM). The 6-view UNet2p5D
         # (+ dual UNet + DINOv2, ~15-18 GB) is unused after the views are produced, but it
@@ -1157,17 +1127,6 @@ class Hunyuan3DShapeV21Generator(BaseGenerator):
                     {"value": "max", "label": "Max (4096 texture; may need shared GPU memory)"},
                 ],
                 "tooltip": "Caps the texture pass's VRAM so it can't spill into system RAM and crawl. Adaptive to free VRAM; this sets the ceiling — a busy GPU may drop a step lower to fit. Balanced targets a ~20 GB peak for 24 GB cards.",
-            },
-            {
-                "id": "low_vram_mode",
-                "label": "Low VRAM mode",
-                "type": "select",
-                "default": 0,
-                "options": [
-                    {"value": 0, "label": "Off"},
-                    {"value": 1, "label": "On (offload paint model to CPU)"},
-                ],
-                "tooltip": "Offloads the paint diffusion model to CPU when VRAM is tight so textures still finish on a busy GPU. Much slower — leave Off unless you get VRAM warnings.",
             },
             {
                 "id": "use_shared_vram",

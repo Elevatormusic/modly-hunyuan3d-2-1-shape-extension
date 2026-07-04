@@ -61,17 +61,16 @@ class TestParams(unittest.TestCase):
         values = {o["value"] for o in schema["texture_memory"]["options"]}
         self.assertEqual(values, {"low", "balanced", "high", "max"})
 
-    def test_low_vram_mode_present_default_off(self):
-        schema = self._schema()
-        self.assertIn("low_vram_mode", schema)
-        self.assertEqual(schema["low_vram_mode"]["default"], 0)
+    def test_low_vram_mode_removed(self):
+        # low_vram_mode (broken CPU offload) was removed in favor of use_shared_vram.
+        self.assertNotIn("low_vram_mode", self._schema())
 
     def test_manifest_and_schema_agree_on_new_knobs(self):
         import json, pathlib
         manifest = json.loads((pathlib.Path(__file__).resolve().parents[1] / "manifest.json").read_text())
         mparams = {p["id"]: p for p in manifest["nodes"][0]["params_schema"]}
         schema = self._schema()
-        for pid in ("texture_memory", "low_vram_mode"):
+        for pid in ("texture_memory",):
             self.assertIn(pid, mparams)
             self.assertEqual(mparams[pid]["default"], schema[pid]["default"])
 
@@ -81,9 +80,8 @@ class TestParams(unittest.TestCase):
         from generator import Hunyuan3DShapeV21Generator as G
         params = inspect.signature(G._run_texture).parameters
         self.assertIn("texture_memory", params)
-        self.assertIn("low_vram_mode", params)
+        self.assertNotIn("low_vram_mode", params)
         self.assertEqual(params["texture_memory"].default, "balanced")
-        self.assertEqual(params["low_vram_mode"].default, False)
 
     def test_texture_memory_has_max_option(self):
         values = {o["value"] for o in self._schema()["texture_memory"]["options"]}
