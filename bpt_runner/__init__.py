@@ -43,7 +43,8 @@ def retopo(dense, temperature=0.5, progress_cb=None):
             r = subprocess.run(
                 [py, infer, "--input", in_glb, "--weights", provision.WEIGHTS,
                  "--output", out_obj, "--temperature", str(temperature)],
-                capture_output=True, text=True, env=_child_env(),
+                capture_output=True, text=True, encoding="utf-8", errors="replace",
+                env=_child_env(),
                 creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
             if r.returncode != 0 or not os.path.exists(out_obj):
                 print(f"[bpt_runner] infer failed rc={r.returncode}: {r.stderr[-500:]}")
