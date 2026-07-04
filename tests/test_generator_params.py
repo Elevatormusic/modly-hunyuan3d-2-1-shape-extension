@@ -75,6 +75,16 @@ class TestParams(unittest.TestCase):
             self.assertIn(pid, mparams)
             self.assertEqual(mparams[pid]["default"], schema[pid]["default"])
 
+    def test_run_texture_accepts_memory_knobs(self):
+        _install_services_stub()
+        import inspect
+        from generator import Hunyuan3DShapeV21Generator as G
+        params = inspect.signature(G._run_texture).parameters
+        self.assertIn("texture_memory", params)
+        self.assertIn("low_vram_mode", params)
+        self.assertEqual(params["texture_memory"].default, "balanced")
+        self.assertEqual(params["low_vram_mode"].default, False)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -179,6 +179,8 @@ class Hunyuan3DShapeV21Generator(BaseGenerator):
         max_num_view   = int(params.get("max_num_view", 6))
         mesh_mode      = str(params.get("mesh_mode", "regular"))
         bake_normal    = int(params.get("bake_normal_map", 1)) == 1
+        texture_memory = str(params.get("texture_memory", "balanced"))
+        low_vram_mode  = int(params.get("low_vram_mode", 0)) == 1
         seed           = int(params.get("seed", -1))
         if seed == -1:
             seed = random.randint(0, 2**32 - 1)
@@ -275,6 +277,7 @@ class Hunyuan3DShapeV21Generator(BaseGenerator):
                 tex_resolution=tex_resolution, max_num_view=max_num_view,
                 progress_cb=progress_cb,
                 mesh_mode=mesh_mode, bake_normal_map=bake_normal,
+                texture_memory=texture_memory, low_vram_mode=low_vram_mode,
             )
             self.load()  # restore shape model for the next run
         else:
@@ -378,6 +381,7 @@ class Hunyuan3DShapeV21Generator(BaseGenerator):
         self, mesh, image, out_path: str,
         tex_resolution: int = 512, max_num_view: int = 6, progress_cb=None,
         mesh_mode: str = "isotropic", bake_normal_map: bool = True,
+        texture_memory: str = "balanced", low_vram_mode: bool = False,
     ) -> None:
         """
         Paint PBR textures onto the shape mesh and write a textured GLB to
@@ -400,12 +404,31 @@ class Hunyuan3DShapeV21Generator(BaseGenerator):
         conf.custom_pipeline       = str(paint_src / "hunyuanpaintpbr")
         conf.realesrgan_ckpt_path  = str(paint_src / "ckpt" / "RealESRGAN_x4plus.pth")
         conf.multiview_pretrained_path = _HF_REPO_ID   # downloads paintpbr subfolder
-        # Bake at the final output resolution instead of 4x supersampling. Upstream
-        # bakes at texture_size=4096 then halves to 2048 on save (downsample=True) —
-        # so 3/4 of the bake/inpaint compute is thrown away. We set texture_size to the
-        # output size and patch downsample=False (see _patch_gpu_accel): same 2048
-        # texture, ~4x faster paint stage.
-        conf.texture_size = 2048
+        # Adaptive texture-memory cap. The shape model is already freed + empty_cache'd
+        # (generate() ~line 267), so measure free VRAM HERE and pick render/texture/SR
+        # sizes that fit — otherwise render_size stays at the vendored default 2048 and
+        # the paint peak spills into system RAM (the 56 GB / 40-min crawl). Paired with
+        # the downsample=False patch (see _patch_gpu_accel) so the bake runs at
+        # texture_size. On a VRAM read failure, fall back to the user's ceiling tier as a
+        # fixed cap (still fixes the render_size leak).
+        import capacity
+        try:
+            _free_gb = torch.cuda.mem_get_info()[0] / 2**30
+            _plan = capacity.plan_texture_memory(
+                _free_gb, texture_memory,
+                tex_resolution=tex_resolution, max_num_view=max_num_view)
+        except Exception as _exc:
+            print(f"[{self.MODEL_ID}] free-VRAM read failed ({_exc}); applying {texture_memory} cap")
+            _plan = capacity.plan_texture_memory(float("inf"), texture_memory)
+        capacity.apply_texture_plan(conf, _plan)
+        conf.low_vram_mode = bool(low_vram_mode)
+        os.environ["EB_SR_CHUNK"] = str(_plan.sr_chunk)   # read by eb_accel.super_resolve_batch
+        if _plan.warning:
+            print(f"[{self.MODEL_ID}] VRAM: {_plan.warning}")
+            self._report(progress_cb, 62, _plan.warning)
+        print(f"[{self.MODEL_ID}] texture_memory tier={_plan.tier} "
+              f"render={_plan.render_size} texture={_plan.texture_size} sr_chunk={_plan.sr_chunk} "
+              f"low_vram={conf.low_vram_mode}")
 
         # Constructing the pipeline triggers a parallel hf_hub snapshot_download
         # of the paint weights. Prime the symlink-support check first so that
@@ -482,7 +505,7 @@ class Hunyuan3DShapeV21Generator(BaseGenerator):
                 try:
                     import normal_bake
                     self._report(progress_cb, 95, "Baking normal map…")
-                    normal_bake.bake_normal_map(dense_for_bake, out_path, size=2048)
+                    normal_bake.bake_normal_map(dense_for_bake, out_path, size=_plan.texture_size)
                 except Exception as exc:
                     print(f"[{self.MODEL_ID}] normal bake skipped ({exc})")
             elif bake_normal_map and mesh_mode == "bpt":
