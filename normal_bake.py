@@ -130,7 +130,10 @@ def encode_tangent_space(low_nrm, world_nrm, mask):
     ln[ln == 0] = 1.0
     nt = nt / ln
     rgb = ((nt * 0.5 + 0.5) * 255.0).clip(0, 255).astype(np.uint8)
-    rgb[~mask] = 0
+    # Uncovered texels MUST be the neutral tangent normal (128,128,255 = flat), NOT
+    # black. Black (0,0,0) decodes to an invalid inward-facing normal that renders as
+    # dark blotches wherever the mesh samples a seam/gap; neutral just shades flat.
+    rgb[~mask] = (128, 128, 255)
     return rgb
 
 

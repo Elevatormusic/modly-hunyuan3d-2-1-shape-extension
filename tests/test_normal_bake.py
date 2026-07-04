@@ -58,6 +58,21 @@ def _ridge_highpoly(height=0.15, n=48):
     return trimesh.Trimesh(vertices=verts, faces=np.array(faces), process=False)
 
 
+class TestEncode(unittest.TestCase):
+    def test_uncovered_texels_are_neutral_not_black(self):
+        size = 8
+        low_nrm = np.tile([0, 0, 1.0], (size, size, 1)).astype(np.float32)
+        world_nrm = low_nrm.copy()
+        mask = np.zeros((size, size), bool)
+        mask[2:5, 2:5] = True  # only the center is covered
+        rgb = normal_bake.encode_tangent_space(low_nrm, world_nrm, mask)
+        # uncovered MUST be neutral (128,128,255), never black (0,0,0)
+        self.assertTrue((rgb[~mask] == [128, 128, 255]).all())
+        self.assertFalse((rgb[~mask] == [0, 0, 0]).all())
+        # covered-and-flat is also ~neutral
+        self.assertTrue(np.allclose(rgb[mask].mean(0), [128, 128, 255], atol=4))
+
+
 class TestBakeEndToEnd(unittest.TestCase):
     def _write_uv_glb(self, path):
         v, f, uv = unit_uv_quad()
