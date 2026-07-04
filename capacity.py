@@ -88,7 +88,13 @@ def plan_texture_memory(free_gb, tier_ceiling="balanced",
 
 
 def apply_texture_plan(conf, plan):
-    """Set the paint config's memory knobs from a TexturePlan. Returns conf."""
+    """Set the paint config's memory knobs from a TexturePlan. Returns conf.
+
+    render_size/texture_size are read by MeshRender at pipeline construction. sr_chunk is
+    surfaced here for inspection/completeness, but the LIVE channel eb_accel reads is the
+    EB_SR_CHUNK env var (set in generator._run_texture) — the vendored SR call site is
+    already patched and doesn't pass conf.
+    """
     conf.render_size = plan.render_size
     conf.texture_size = plan.texture_size
     conf.sr_chunk = plan.sr_chunk

@@ -685,11 +685,14 @@ class Hunyuan3DShapeV21Generator(BaseGenerator):
                 uvw.write_text(text.replace(old, new), encoding="utf-8")
                 print(f"[{self.MODEL_ID}] tuned xatlas for cleaner UVs (fewer charts + padding)")
 
-        # 5. Opt-in CPU offload (low_vram_mode). The paint UNet+DINO+SR floor is ~21 GB;
-        # when the user enables Low VRAM mode we swap the pipeline's `.to(device)` for
-        # diffusers' enable_model_cpu_offload() (~21 GB -> ~15 GB, slower). Guarded: any
-        # failure (e.g. the custom attn_processor's hardcoded cuda:0) falls back to the
-        # normal on-device path so a generation never breaks. Off by default.
+        # 5. Opt-in CPU offload (low_vram_mode). When the user enables Low VRAM mode we
+        # swap the pipeline's `.to(device)` for diffusers' enable_model_cpu_offload()
+        # (upstream reports ~21 -> ~15 GB, slower). NOTE: efficacy is UNVALIDATED here —
+        # the paint pipeline reassigns self.unet to a UNet2p5D wrapper AFTER
+        # register_modules, so accelerate's hooks may land on the orphaned bare unet and
+        # save less than hoped (see the calibration runbook, item 6). Guarded: any failure
+        # (e.g. the custom attn_processor's hardcoded cuda:0) falls back to the normal
+        # on-device path so a generation never breaks. Off by default.
         mvu = paint_src / "utils" / "multiview_utils.py"
         if mvu.exists():
             text = mvu.read_text(encoding="utf-8")
@@ -1101,7 +1104,7 @@ class Hunyuan3DShapeV21Generator(BaseGenerator):
                     {"value": "balanced", "label": "Balanced (recommended)"},
                     {"value": "high", "label": "High (sharpest, needs an empty GPU)"},
                 ],
-                "tooltip": "Caps the texture pass's VRAM so it can't spill into system RAM and crawl. Adaptive to free VRAM; this sets the ceiling. Balanced fits a 24 GB card with room to spare.",
+                "tooltip": "Caps the texture pass's VRAM so it can't spill into system RAM and crawl. Adaptive to free VRAM; this sets the ceiling — a busy GPU may drop a step lower to fit. Balanced targets a ~20 GB peak for 24 GB cards.",
             },
             {
                 "id": "low_vram_mode",
