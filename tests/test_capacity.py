@@ -134,5 +134,31 @@ class TestSharedRamAllowance(unittest.TestCase):
         self.assertEqual(capacity.shared_ram_allowance("x", 40), 0.0)
 
 
+class TestExtraBudget(unittest.TestCase):
+    def test_extra_budget_makes_max_reachable(self):
+        # 10 GB free VRAM alone can't fit Max, but +20 GB shared can.
+        p = capacity.plan_texture_memory(10, "max", extra_budget_gb=20)
+        self.assertEqual(p.tier, "max")
+        self.assertIsNotNone(p.warning)
+        self.assertIn("page", p.warning.lower())
+
+    def test_no_paging_warning_when_fits_pure_vram(self):
+        p = capacity.plan_texture_memory(24, "max")   # fits in real VRAM
+        self.assertEqual(p.tier, "max")
+        self.assertIsNone(p.warning)
+
+    def test_extra_budget_zero_is_unchanged(self):
+        a = capacity.plan_texture_memory(22, "high")
+        b = capacity.plan_texture_memory(22, "high", extra_budget_gb=0.0)
+        self.assertEqual(a, b)
+
+    def test_toggle_off_never_pages(self):
+        # 22 GB free, no extra budget: High won't fit (needs 23.5) -> Balanced (21.5<=22),
+        # which fits pure VRAM (peak 19.5 <= 22) -> no paging warning.
+        p = capacity.plan_texture_memory(22, "high")
+        self.assertEqual(p.tier, "balanced")
+        self.assertIsNone(p.warning)
+
+
 if __name__ == "__main__":
     unittest.main()

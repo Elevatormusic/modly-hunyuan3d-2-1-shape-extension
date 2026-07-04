@@ -56,14 +56,21 @@ def _tex_tier_index(tier):
 
 
 def plan_texture_memory(free_gb, tier_ceiling="balanced",
-                        tex_resolution=512, max_num_view=6):
-    """Pick (render_size, texture_size, sr_chunk) that fit `free_gb` of VRAM without
-    exceeding the user's `tier_ceiling`. Pure; generator.py feeds it
-    torch.cuda.mem_get_info() taken AFTER the shape model is freed. Never raises."""
+                        tex_resolution=512, max_num_view=6, extra_budget_gb=0.0):
+    """Pick (render_size, texture_size, sr_chunk) that fit the memory BUDGET without
+    exceeding the user's `tier_ceiling`. budget = free VRAM + extra_budget_gb (the latter is
+    the opt-in shared-system-RAM allowance). Pure; generator.py feeds it
+    torch.cuda.mem_get_info() (free) + capacity.shared_ram_allowance() (extra). When a tier
+    fits only via the shared budget (its peak exceeds free VRAM) the plan carries a loud
+    paging warning. Never raises."""
     try:
         free = float(free_gb)
     except (TypeError, ValueError):
         free = 0.0
+    try:
+        budget = free + max(0.0, float(extra_budget_gb))
+    except (TypeError, ValueError):
+        budget = free
     ceiling_i = _tex_tier_index(tier_ceiling)
     # same demand shape as paint_vram(): the two diffusion quality knobs cost extra.
     extra = (3.0 if int(tex_resolution) >= 768 else 0.0) + max(0, int(max_num_view) - 6) * 0.6
@@ -71,19 +78,26 @@ def plan_texture_memory(free_gb, tier_ceiling="balanced",
     chosen = None
     for i in range(ceiling_i, -1, -1):
         tier = _TIER_ORDER[i]
-        if _TEX_PEAK[tier] + extra + _TEX_MARGIN <= free:
+        if _TEX_PEAK[tier] + extra + _TEX_MARGIN <= budget:
             chosen = tier
             break
 
     offload_hint = False
     warning = None
-    if chosen is None:              # even Low won't fit — best effort + warn (no silent offload)
+    if chosen is None:              # even Low won't fit the budget — best effort + warn
         chosen = "low"
         offload_hint = True
         need = _TEX_PEAK["low"] + extra
-        warning = (f"Textures need ~{need:.0f} GB but only ~{free:.0f} GB VRAM is free — "
-                   f"close other GPU apps, turn on Low VRAM mode, or turn textures off "
-                   f"to avoid a slowdown or out-of-memory error.")
+        warning = (f"Textures need ~{need:.0f} GB but only ~{budget:.0f} GB is available — "
+                   f"close other GPU apps, turn on Use shared GPU memory, or turn textures "
+                   f"off to avoid a slowdown or out-of-memory error.")
+    else:
+        peak = _TEX_PEAK[chosen] + extra
+        if peak > free:             # fits only via shared budget -> pages to RAM over PCIe
+            paged = peak - free
+            warning = (f"{chosen.capitalize()} tier will page ~{paged:.0f} GB to system RAM "
+                       f"over PCIe (shared GPU memory) — expect it to run several times "
+                       f"slower (tens of minutes).")
 
     r, t, c = _TEX_TIERS[chosen]
     return TexturePlan(r, t, c, chosen, offload_hint, warning)
