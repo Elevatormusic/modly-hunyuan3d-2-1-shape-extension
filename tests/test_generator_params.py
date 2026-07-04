@@ -103,6 +103,14 @@ class TestParams(unittest.TestCase):
         mvals = {o["value"] for o in mparams["texture_memory"]["options"]}
         self.assertIn("max", mvals)
 
+    def test_run_texture_accepts_use_shared_vram(self):
+        _install_services_stub()
+        import inspect
+        from generator import Hunyuan3DShapeV21Generator as G
+        params = inspect.signature(G._run_texture).parameters
+        self.assertIn("use_shared_vram", params)
+        self.assertEqual(params["use_shared_vram"].default, False)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -181,6 +181,7 @@ class Hunyuan3DShapeV21Generator(BaseGenerator):
         bake_normal    = int(params.get("bake_normal_map", 1)) == 1
         texture_memory = str(params.get("texture_memory", "balanced"))
         low_vram_mode  = int(params.get("low_vram_mode", 0)) == 1
+        use_shared_vram = int(params.get("use_shared_vram", 0)) == 1
         seed           = int(params.get("seed", -1))
         if seed == -1:
             seed = random.randint(0, 2**32 - 1)
@@ -278,6 +279,7 @@ class Hunyuan3DShapeV21Generator(BaseGenerator):
                 progress_cb=progress_cb,
                 mesh_mode=mesh_mode, bake_normal_map=bake_normal,
                 texture_memory=texture_memory, low_vram_mode=low_vram_mode,
+                use_shared_vram=use_shared_vram,
             )
             self.load()  # restore shape model for the next run
         else:
@@ -382,6 +384,7 @@ class Hunyuan3DShapeV21Generator(BaseGenerator):
         tex_resolution: int = 512, max_num_view: int = 6, progress_cb=None,
         mesh_mode: str = "isotropic", bake_normal_map: bool = True,
         texture_memory: str = "balanced", low_vram_mode: bool = False,
+        use_shared_vram: bool = False,
     ) -> None:
         """
         Paint PBR textures onto the shape mesh and write a textured GLB to
@@ -412,14 +415,37 @@ class Hunyuan3DShapeV21Generator(BaseGenerator):
         # texture_size. On a VRAM read failure, fall back to the user's ceiling tier as a
         # fixed cap (still fixes the render_size leak).
         import capacity
+        # Opt-in shared-GPU-memory budget: borrow a safe slice of system RAM so High/Max
+        # can run when they exceed free VRAM (pages over PCIe -> slower). Read RAM here
+        # (keeps capacity.py pure). Page-file preflight: a small Windows page file turns a
+        # shared-RAM overflow into a hard "error 1455" instead of a graceful slowdown.
+        _extra_budget = 0.0
+        if use_shared_vram:
+            try:
+                import psutil
+                _vm = psutil.virtual_memory()
+                _total_gb = _vm.total / 2**30
+                _extra_budget = capacity.shared_ram_allowance(_total_gb, _vm.available / 2**30)
+                _swap_gb = psutil.swap_memory().total / 2**30
+                if _swap_gb < 1.5 * _total_gb:
+                    _pf = (f"Shared GPU memory is on but the Windows page file (~{_swap_gb:.0f} GB) "
+                           f"is small — enlarge it to >= {1.5 * _total_gb:.0f} GB, or a big run may "
+                           f"hard-fail (error 1455) instead of just slowing down.")
+                    print(f"[{self.MODEL_ID}] {_pf}")
+                    self._report(progress_cb, 61, _pf)
+            except Exception as _exc:
+                print(f"[{self.MODEL_ID}] shared-RAM read failed ({_exc}); shared budget = 0")
+                _extra_budget = 0.0
         try:
             _free_gb = torch.cuda.mem_get_info()[0] / 2**30
             _plan = capacity.plan_texture_memory(
                 _free_gb, texture_memory,
-                tex_resolution=tex_resolution, max_num_view=max_num_view)
+                tex_resolution=tex_resolution, max_num_view=max_num_view,
+                extra_budget_gb=_extra_budget)
         except Exception as _exc:
             print(f"[{self.MODEL_ID}] free-VRAM read failed ({_exc}); applying {texture_memory} cap")
-            _plan = capacity.plan_texture_memory(float("inf"), texture_memory)
+            _plan = capacity.plan_texture_memory(
+                float("inf"), texture_memory, extra_budget_gb=_extra_budget)
         capacity.apply_texture_plan(conf, _plan)
         conf.low_vram_mode = bool(low_vram_mode)
         os.environ["EB_SR_CHUNK"] = str(_plan.sr_chunk)   # read by eb_accel.super_resolve_batch
@@ -428,7 +454,7 @@ class Hunyuan3DShapeV21Generator(BaseGenerator):
             self._report(progress_cb, 62, _plan.warning)
         print(f"[{self.MODEL_ID}] texture_memory tier={_plan.tier} "
               f"render={_plan.render_size} texture={_plan.texture_size} sr_chunk={_plan.sr_chunk} "
-              f"low_vram={conf.low_vram_mode}")
+              f"shared_budget={_extra_budget:.0f}GB low_vram={conf.low_vram_mode}")
 
         # Constructing the pipeline triggers a parallel hf_hub snapshot_download
         # of the paint weights. Prime the symlink-support check first so that
