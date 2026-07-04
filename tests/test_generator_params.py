@@ -85,6 +85,24 @@ class TestParams(unittest.TestCase):
         self.assertEqual(params["texture_memory"].default, "balanced")
         self.assertEqual(params["low_vram_mode"].default, False)
 
+    def test_texture_memory_has_max_option(self):
+        values = {o["value"] for o in self._schema()["texture_memory"]["options"]}
+        self.assertIn("max", values)
+
+    def test_use_shared_vram_present_default_off(self):
+        schema = self._schema()
+        self.assertIn("use_shared_vram", schema)
+        self.assertEqual(schema["use_shared_vram"]["default"], 0)
+
+    def test_use_shared_vram_manifest_parity(self):
+        import json, pathlib
+        manifest = json.loads((pathlib.Path(__file__).resolve().parents[1] / "manifest.json").read_text())
+        mparams = {p["id"]: p for p in manifest["nodes"][0]["params_schema"]}
+        self.assertIn("use_shared_vram", mparams)
+        self.assertEqual(mparams["use_shared_vram"]["default"], 0)
+        mvals = {o["value"] for o in mparams["texture_memory"]["options"]}
+        self.assertIn("max", mvals)
+
 
 if __name__ == "__main__":
     unittest.main()

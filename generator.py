@@ -1103,6 +1103,7 @@ class Hunyuan3DShapeV21Generator(BaseGenerator):
                     {"value": "low", "label": "Low (smallest, softest)"},
                     {"value": "balanced", "label": "Balanced (recommended)"},
                     {"value": "high", "label": "High (sharpest, needs an empty GPU)"},
+                    {"value": "max", "label": "Max (4096 texture; may need shared GPU memory)"},
                 ],
                 "tooltip": "Caps the texture pass's VRAM so it can't spill into system RAM and crawl. Adaptive to free VRAM; this sets the ceiling — a busy GPU may drop a step lower to fit. Balanced targets a ~20 GB peak for 24 GB cards.",
             },
@@ -1116,6 +1117,17 @@ class Hunyuan3DShapeV21Generator(BaseGenerator):
                     {"value": 1, "label": "On (offload paint model to CPU)"},
                 ],
                 "tooltip": "Offloads the paint diffusion model to CPU when VRAM is tight so textures still finish on a busy GPU. Much slower — leave Off unless you get VRAM warnings.",
+            },
+            {
+                "id": "use_shared_vram",
+                "label": "Use shared GPU memory",
+                "type": "select",
+                "default": 0,
+                "options": [
+                    {"value": 0, "label": "Off"},
+                    {"value": 1, "label": "On (borrow system RAM — much slower)"},
+                ],
+                "tooltip": "Lets High/Max run when they exceed your VRAM by paging to system RAM over PCIe. Much slower (tens of minutes) and needs a large Windows page file. Leave Off unless you want maximum texture quality and don't mind the wait.",
             },
             {
                 "id": "mesh_mode",
