@@ -48,5 +48,28 @@ class TestReconcile(unittest.TestCase):
         np.testing.assert_array_equal(out[:, 59:], atlas[:, 59:]) # deep interior B
 
 
+class TestDilateAndCompose(unittest.TestCase):
+    def test_gutter_filled_with_nearest_valid(self):
+        import numpy as np, seam_fix
+        atlas = np.zeros((32, 32, 3), np.uint8)
+        # one triangle covering the top-left; the rest is gutter (black)
+        faces = np.array([[0, 1, 2]], int)
+        uvs = np.array([[0.05, 0.95], [0.45, 0.95], [0.05, 0.55]], float)
+        atlas[2:14, 2:14] = [180, 20, 20]   # paint roughly where the tri lands
+        out = seam_fix._dilate_gutter(atlas.copy(), faces, uvs, gutter_px=6)
+        # a gutter texel just outside the island should now be island-colored, not black
+        self.assertGreater(int(out[15, 8, 0]), 0)
+
+    def test_reconcile_and_dilate_noop_on_no_seam(self):
+        import numpy as np, seam_fix
+        atlas = np.full((16, 16, 3), 120, np.uint8)
+        vertices = np.array([[0,0,0],[1,0,0],[0,1,0]], float)
+        faces = np.array([[0,1,2]], int)
+        uvs = np.array([[0.1,0.1],[0.9,0.1],[0.1,0.9]], float)
+        out = seam_fix.reconcile_and_dilate(vertices, faces, uvs, atlas.copy())
+        # no seam -> interior untouched (dilation only writes gutter)
+        np.testing.assert_array_equal(out[3:6, 3:6], atlas[3:6, 3:6])
+
+
 if __name__ == "__main__":
     unittest.main()

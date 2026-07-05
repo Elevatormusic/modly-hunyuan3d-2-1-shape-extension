@@ -112,3 +112,47 @@ def _local_band(uvs, faces, seams, atlas_dim):
     shortest = min(np.hypot(*((a1 - a0) * atlas_dim)) for a0, a1, _, _ in seams)
     clamp = max(1, int(shortest // 3))
     return min(base, clamp)
+
+
+def _coverage_mask(uvs, faces, h, w):
+    from matplotlib.path import Path  # available via trimesh dep chain
+    mask = np.zeros((h, w), bool)
+    xs, ys = np.meshgrid(np.arange(w), np.arange(h))
+    pts = np.column_stack([xs.ravel(), ys.ravel()])
+    for f in np.asarray(faces):
+        tri = np.array([_uv_to_px(uvs[int(i)], w, h) for i in f])
+        inside = Path(tri).contains_points(pts)
+        mask.ravel()[inside] = True
+    return mask
+
+
+def _dilate_gutter(atlas, faces, uvs, gutter_px):
+    from scipy import ndimage
+    h, w = atlas.shape[:2]
+    valid = _coverage_mask(uvs, faces, h, w)
+    if valid.all() or not valid.any():
+        return atlas
+    # nearest valid texel index for every texel
+    idx = ndimage.distance_transform_edt(~valid, return_distances=True,
+                                         return_indices=True)
+    dist, (iy, ix) = idx[0], idx[1]
+    fill = (~valid) & (dist <= gutter_px)
+    out = atlas.copy()
+    out[fill] = atlas[iy[fill], ix[fill]]
+    return out
+
+
+def reconcile_and_dilate(vertices, faces, uvs, atlas, *,
+                         seam_band_px=None, gutter_px=None):
+    atlas = np.array(atlas)
+    h, w = atlas.shape[:2]
+    dim = max(h, w)
+    seams = _find_seam_edges(vertices, faces, uvs)
+    if seam_band_px is None:
+        seam_band_px = _local_band(uvs, faces, seams, dim)
+    if gutter_px is None:
+        gutter_px = max(1, round(16 * dim / 4096))
+    if seams:
+        atlas = _reconcile(atlas, faces, uvs, seams, seam_band_px)
+    atlas = _dilate_gutter(atlas, faces, uvs, gutter_px)
+    return atlas
