@@ -71,5 +71,26 @@ class TestDilateAndCompose(unittest.TestCase):
         np.testing.assert_array_equal(out[3:6, 3:6], atlas[3:6, 3:6])
 
 
+class TestApplyToGlb(unittest.TestCase):
+    def test_apply_preserves_albedo_and_mr(self):
+        import os, tempfile, numpy as np, trimesh, mr_export, seam_fix
+        from PIL import Image
+        with tempfile.TemporaryDirectory() as d:
+            base = os.path.join(d, "textured")
+            Image.fromarray(np.full((64,64,3),128,np.uint8)).save(base+".png")
+            Image.fromarray(np.full((64,64),30,np.uint8)).save(base+"_metallic.png")
+            Image.fromarray(np.full((64,64),210,np.uint8)).save(base+"_roughness.png")
+            with open(base+".mtl","w") as f: f.write("newmtl m\nmap_Kd textured.png\n")
+            with open(base+".obj","w") as f:
+                f.write("mtllib textured.mtl\nusemtl m\nv 0 0 0\nv 1 0 0\nv 0 1 0\n"
+                        "vt 0 0\nvt 1 0\nvt 0 1\nf 1/1 2/2 3/3\n")
+            glb = os.path.join(d, "out.glb")
+            mr_export.build_glb_with_mr(base+".obj", glb)
+            seam_fix.apply_to_glb(glb)     # must not raise
+            g = list(trimesh.load(glb, process=False).geometry.values())[0]
+            self.assertIsNotNone(g.visual.material.baseColorTexture)
+            self.assertIsNotNone(g.visual.material.metallicRoughnessTexture)
+
+
 if __name__ == "__main__":
     unittest.main()

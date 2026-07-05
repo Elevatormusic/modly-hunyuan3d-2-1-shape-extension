@@ -165,3 +165,27 @@ def reconcile_and_dilate(vertices, faces, uvs, atlas, *,
         atlas = _reconcile(atlas, faces, uvs, seams, seam_band_px)
     atlas = _dilate_gutter(atlas, faces, uvs, gutter_px)
     return atlas
+
+
+def apply_to_glb(glb_path):
+    import trimesh
+    from PIL import Image
+    scene = trimesh.load(glb_path, process=False)
+    geoms = scene.geometry.values() if hasattr(scene, "geometry") else [scene]
+    for g in geoms:
+        v = getattr(g, "visual", None)
+        mat = getattr(v, "material", None)
+        uv = getattr(v, "uv", None)
+        if mat is None or uv is None:
+            continue
+        verts = np.asarray(g.vertices)
+        faces = np.asarray(g.faces)
+        uvs = np.asarray(uv)
+        for attr in ("baseColorTexture", "metallicRoughnessTexture"):
+            img = getattr(mat, attr, None)
+            if img is None:
+                continue
+            arr = np.asarray(img.convert("RGB"))
+            fixed = reconcile_and_dilate(verts, faces, uvs, arr)
+            setattr(mat, attr, Image.fromarray(fixed, "RGB"))
+    scene.export(glb_path)
