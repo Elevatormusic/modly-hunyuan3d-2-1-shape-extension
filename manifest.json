@@ -4,7 +4,7 @@
   "type": "model",
   "source": "https://github.com/Elevatormusic/modly-hunyuan3d-2-1-shape-extension",
   "description": "Full-size Hunyuan3D-2.1 (3.3B params, fp16 ckpt). High-fidelity image-to-mesh geometry with an optional PBR texture pass (shape → paint, run sequentially). The texture pass adds a selectable mesh-cleanup mode (isotropic / quadric / BPT neural retopo) and a tangent-space normal-map bake that transfers dense detail onto the clean base. Shape needs ~10 GB VRAM; textures need ~21 GB plus a C++/CUDA build toolchain.",
-  "version": "1.4.0",
+  "version": "1.5.0",
   "author": "elevatormusic",
   "generator_class": "Hunyuan3DShapeV21Generator",
   "tags": ["image-to-3d", "shape", "high-fidelity"],
