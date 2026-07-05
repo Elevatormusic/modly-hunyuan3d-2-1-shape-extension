@@ -58,7 +58,7 @@ class TestDilateAndCompose(unittest.TestCase):
         atlas[2:14, 2:14] = [180, 20, 20]   # paint roughly where the tri lands
         out = seam_fix._dilate_gutter(atlas.copy(), faces, uvs, gutter_px=6)
         # a gutter texel just outside the island should now be island-colored, not black
-        self.assertGreater(int(out[15, 8, 0]), 0)
+        np.testing.assert_array_equal(out[15, 8], [180, 20, 20])
 
     def test_reconcile_and_dilate_noop_on_no_seam(self):
         import numpy as np, seam_fix

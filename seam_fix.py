@@ -117,12 +117,21 @@ def _local_band(uvs, faces, seams, atlas_dim):
 def _coverage_mask(uvs, faces, h, w):
     from matplotlib.path import Path  # available via trimesh dep chain
     mask = np.zeros((h, w), bool)
-    xs, ys = np.meshgrid(np.arange(w), np.arange(h))
-    pts = np.column_stack([xs.ravel(), ys.ravel()])
     for f in np.asarray(faces):
         tri = np.array([_uv_to_px(uvs[int(i)], w, h) for i in f])
-        inside = Path(tri).contains_points(pts)
-        mask.ravel()[inside] = True
+        # restrict the point test to this triangle's pixel bounding box so we
+        # test O(bbox) texels per face instead of the whole h*w grid. Result is
+        # identical: texels outside the bbox can't be inside the triangle.
+        x0 = int(np.floor(tri[:, 0].min())); x1 = int(np.ceil(tri[:, 0].max()))
+        y0 = int(np.floor(tri[:, 1].min())); y1 = int(np.ceil(tri[:, 1].max()))
+        x0 = max(0, min(x0, w - 1)); x1 = max(0, min(x1, w - 1))
+        y0 = max(0, min(y0, h - 1)); y1 = max(0, min(y1, h - 1))
+        if x1 < x0 or y1 < y0:
+            continue
+        xs, ys = np.meshgrid(np.arange(x0, x1 + 1), np.arange(y0, y1 + 1))
+        pts = np.column_stack([xs.ravel(), ys.ravel()])
+        inside = Path(tri).contains_points(pts).reshape(ys.shape)
+        mask[y0:y1 + 1, x0:x1 + 1] |= inside
     return mask
 
 
