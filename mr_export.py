@@ -19,14 +19,26 @@ def pack_metallic_roughness(metallic_img, roughness_img):
     return Image.fromarray(out, "RGB")
 
 
+def _find_map(base, suffix):
+    """Resolve an MR sibling across the extensions the paint may emit.
+    Real paint writes .jpg (vendored _save_texture_map defaults to ".jpg");
+    older/test artifacts write .png. Return the first existing path or None."""
+    for ext in (".jpg", ".png", ".jpeg"):
+        p = base + suffix + ext
+        if os.path.exists(p):
+            return p
+    return None
+
+
 def build_glb_with_mr(obj_path, glb_path):
     import trimesh
     from trimesh.visual.material import PBRMaterial
     scene = trimesh.load(obj_path, process=False)
     base = os.path.splitext(obj_path)[0]
-    mpath, rpath = base + "_metallic.png", base + "_roughness.png"
+    mpath = _find_map(base, "_metallic")
+    rpath = _find_map(base, "_roughness")
     mr = None
-    if os.path.exists(mpath) and os.path.exists(rpath):
+    if mpath and rpath:
         mr = pack_metallic_roughness(Image.open(mpath), Image.open(rpath))
     geoms = scene.geometry.values() if hasattr(scene, "geometry") else [scene]
     for g in geoms:

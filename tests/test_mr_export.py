@@ -49,3 +49,35 @@ class TestMRExport(unittest.TestCase):
             self.assertTrue(mr_export.build_glb_with_mr(obj, glb))
             g = list(trimesh.load(glb, process=False).geometry.values())[0]
             self.assertIsNone(g.visual.material.metallicRoughnessTexture)
+
+    def _write_obj_jpg(self, d):
+        # Real paint writes .jpg MR siblings (vendored _save_texture_map default),
+        # and the MTL map_Kd points at a .jpg albedo. This is the on-disk case the
+        # .png-only tests missed.
+        base = os.path.join(d, "textured")
+        Image.fromarray(np.full((8,8,3),128,np.uint8)).save(base+".jpg")
+        Image.fromarray(np.full((8,8),30,np.uint8)).save(base+"_metallic.jpg")
+        Image.fromarray(np.full((8,8),210,np.uint8)).save(base+"_roughness.jpg")
+        with open(base+".mtl","w") as f:
+            f.write("newmtl m\nmap_Kd textured.jpg\n")
+        with open(base+".obj","w") as f:
+            f.write("mtllib textured.mtl\nusemtl m\n"
+                    "v 0 0 0\nv 1 0 0\nv 0 1 0\n"
+                    "vt 0 0\nvt 1 0\nvt 0 1\n"
+                    "f 1/1 2/2 3/3\n")
+        return base+".obj"
+
+    def test_build_glb_wires_mr_from_jpg(self):
+        # Regression for C1: .jpg MR siblings must still wire the MR atlas.
+        with tempfile.TemporaryDirectory() as d:
+            obj = self._write_obj_jpg(d)
+            glb = os.path.join(d, "out.glb")
+            self.assertTrue(mr_export.build_glb_with_mr(obj, glb))
+            scene = trimesh.load(glb, process=False)
+            g = list(scene.geometry.values())[0]
+            mat = g.visual.material
+            self.assertIsNotNone(mat.metallicRoughnessTexture)
+            mr = np.asarray(mat.metallicRoughnessTexture.convert("RGB"))
+            # jpg is lossy; allow a small tolerance on the near-uniform fill.
+            self.assertLess(abs(int(mr[..., 1].mean()) - 210), 5)   # roughness -> G
+            self.assertLess(abs(int(mr[..., 2].mean()) - 30), 5)    # metallic  -> B

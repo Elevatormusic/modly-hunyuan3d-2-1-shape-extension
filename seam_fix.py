@@ -11,6 +11,8 @@ import numpy as np
 
 def _weld_index(vertices, tol_rel=1e-6):
     v = np.asarray(vertices, dtype=np.float64)
+    if v.size == 0:
+        return np.zeros(len(vertices), dtype=np.int64)
     scale = float(np.ptp(v, axis=0).max()) or 1.0
     keys = np.round(v / (scale * tol_rel)).astype(np.int64)
     _, inv = np.unique(keys, axis=0, return_inverse=True)

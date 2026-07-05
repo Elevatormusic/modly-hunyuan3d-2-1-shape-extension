@@ -70,6 +70,17 @@ class TestDilateAndCompose(unittest.TestCase):
         # no seam -> interior untouched (dilation only writes gutter)
         np.testing.assert_array_equal(out[3:6, 3:6], atlas[3:6, 3:6])
 
+    def test_reconcile_and_dilate_noop_on_zero_vertices(self):
+        # MINOR-2: empty input must return the atlas unchanged, not raise
+        # (np.ptp on a 0-row array previously raised ValueError).
+        import numpy as np, seam_fix
+        atlas = np.full((16, 16, 3), 120, np.uint8)
+        vertices = np.zeros((0, 3), float)
+        faces = np.zeros((0, 3), int)
+        uvs = np.zeros((0, 2), float)
+        out = seam_fix.reconcile_and_dilate(vertices, faces, uvs, atlas.copy())
+        np.testing.assert_array_equal(out, atlas)
+
 
 class TestApplyToGlb(unittest.TestCase):
     def test_apply_preserves_albedo_and_mr(self):
