@@ -24,5 +24,29 @@ class TestSeamDetection(unittest.TestCase):
         self.assertFalse(np.allclose(a0, b0) and np.allclose(a1, b1))
 
 
+class TestReconcile(unittest.TestCase):
+    def test_seam_jump_drops_interior_preserved(self):
+        # Build a 64x64 atlas: left half color A, right half color B, seam down the
+        # middle mapped by two charts. Assert cross-seam delta drops, deep interior
+        # (col 5 vs col 58) unchanged.
+        import numpy as np, seam_fix
+        atlas = np.zeros((64, 64, 3), np.uint8)
+        atlas[:, :32] = [200, 40, 40]   # chart A
+        atlas[:, 32:] = [40, 40, 200]   # chart B
+        # two charts abutting at u=0.5; verts share the 3D edge, UVs differ across it
+        vertices = np.array([[0,0,0],[0,1,0],[1,0,0],   # A tri (3D edge v0-v1)
+                             [0,0,0],[0,1,0],[-1,0,0]], float)  # B tri, same 3D edge
+        faces = np.array([[0,1,2],[3,4,5]], int)
+        uvs = np.array([[0.49,0.1],[0.49,0.9],[0.1,0.5],
+                        [0.51,0.1],[0.51,0.9],[0.9,0.5]], float)
+        before = abs(int(atlas[32,31,2]) - int(atlas[32,32,2]))
+        out = seam_fix._reconcile(atlas.copy(), faces, uvs,
+                                  seam_fix._find_seam_edges(vertices,faces,uvs), 4)
+        after = abs(int(out[32,31,2]) - int(out[32,32,2]))
+        self.assertLess(after, before)              # seam jump reduced
+        np.testing.assert_array_equal(out[:, :5], atlas[:, :5])   # deep interior A
+        np.testing.assert_array_equal(out[:, 59:], atlas[:, 59:]) # deep interior B
+
+
 if __name__ == "__main__":
     unittest.main()

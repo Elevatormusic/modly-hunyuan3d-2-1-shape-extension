@@ -43,3 +43,72 @@ def _find_seam_edges(vertices, faces, uvs):
         seams.append((np.array(uvA0), np.array(uvA1),
                       np.array(uvB0), np.array(uvB1)))
     return seams
+
+
+def _uv_to_px(uv, w, h):
+    # UV origin bottom-left; atlas row 0 = top. v flipped.
+    return np.array([uv[0] * (w - 1), (1.0 - uv[1]) * (h - 1)])
+
+
+def _reconcile(atlas, faces, uvs, seams, seam_band_px):
+    if not seams:
+        return atlas
+    h, w = atlas.shape[:2]
+    band = max(1, int(seam_band_px))
+    # accumulate a per-texel additive correction, feathered by distance to seam.
+    corr = np.zeros((h, w, atlas.shape[2]), np.float64)
+    wsum = np.zeros((h, w), np.float64)
+    atf = atlas.astype(np.float64)
+    for a0, a1, b0, b1 in seams:
+        pa0, pa1 = _uv_to_px(a0, w, h), _uv_to_px(a1, w, h)
+        pb0, pb1 = _uv_to_px(b0, w, h), _uv_to_px(b1, w, h)
+        n = max(2, int(np.hypot(*(pa1 - pa0))) + 1)
+        for t in np.linspace(0.0, 1.0, n):
+            ca = pa0 + t * (pa1 - pa0)
+            cb = pb0 + t * (pb1 - pb0)
+            # inward normals (toward each chart interior): sample 3px in
+            da = _inward(ca, cb)
+            db = _inward(cb, ca)
+            sa = _sample(atf, ca + 3 * da)
+            sb = _sample(atf, cb + 3 * db)
+            target = 0.5 * (sa + sb)
+            _spray(corr, wsum, ca, da, band, target - sa)
+            _spray(corr, wsum, cb, db, band, target - sb)
+    m = wsum > 0
+    out = atf.copy()
+    out[m] += corr[m] / wsum[m, None]
+    return np.clip(out, 0, 255).astype(atlas.dtype)
+
+
+def _inward(c, other):
+    d = c - other
+    nrm = np.hypot(*d) or 1.0
+    return d / nrm
+
+
+def _sample(atf, p):
+    h, w = atf.shape[:2]
+    x = int(np.clip(round(p[0]), 0, w - 1))
+    y = int(np.clip(round(p[1]), 0, h - 1))
+    return atf[y, x]
+
+
+def _spray(corr, wsum, c, inward, band, delta):
+    h, w = wsum.shape
+    for d in range(band):
+        p = c + d * inward
+        x = int(round(p[0])); y = int(round(p[1]))
+        if 0 <= x < w and 0 <= y < h:
+            fw = 1.0 - d / float(band)   # feather: full at seam -> 0 at band edge
+            corr[y, x] += fw * delta
+            wsum[y, x] += fw
+
+
+def _local_band(uvs, faces, seams, atlas_dim):
+    base = max(1, round(9 * atlas_dim / 4096))
+    if not seams:
+        return base
+    # shortest incident UV edge length in texels among seam edges
+    shortest = min(np.hypot(*((a1 - a0) * atlas_dim)) for a0, a1, _, _ in seams)
+    clamp = max(1, int(shortest // 3))
+    return min(base, clamp)
