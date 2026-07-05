@@ -43,6 +43,28 @@ _REALESRGAN_URL  = (
     "v0.1.0/RealESRGAN_x4plus.pth"
 )
 
+# --- Background removal ------------------------------------------------------ #
+# The DiT shape pipeline conditions on the image's ALPHA channel as the object
+# mask (see preprocessors.py ImageProcessorV2.recenter: if the array has 4
+# channels it takes channel 3 as the mask, else it treats the whole frame as
+# foreground). So a fully-opaque alpha — i.e. the background was NOT cut out —
+# makes the entire photo the "object", and the model reconstructs the backdrop as
+# a flat ground slab. A good matte is therefore what prevents the floor. We run on
+# the CPU execution provider on purpose: the venv's onnxruntime-gpu targets a
+# different CUDA than torch, so its GPU provider can't load (missing cublasLt64_13
+# .dll) — and u2net on CPU is a ~1 s op anyway.
+_BG_MODELS = ("u2net", "isnet-general-use")   # primary, then escalate on a suspect matte
+
+
+def _matte_coverage_ok(fg_fraction: float) -> bool:
+    """A healthy matte keeps *some* of the frame but not ~all of it.
+
+    fg_fraction = share of pixels left non-transparent after removal. ~1.0 means
+    the background was kept (the floor bug); ~0.0 means the object was erased.
+    Either extreme is a failed matte worth escalating to the next model / warning.
+    """
+    return 0.02 < fg_fraction < 0.92
+
 
 def _creep_elapsed(progress_cb, start, end, base_label, stop, interval=4.0):
     """Progress creeper that never looks frozen during a long blocking stage.
@@ -294,18 +316,60 @@ class Hunyuan3DShapeV21Generator(BaseGenerator):
 
     def _preprocess(self, image_bytes: bytes) -> "Image.Image":
         from PIL import Image
-        img = Image.open(io.BytesIO(image_bytes)).convert("RGBA")
-        # Prefer hy3dshape's bundled background remover; fall back to plain rembg.
-        try:
-            from hy3dshape.rembg import BackgroundRemover
-            return BackgroundRemover()(img)
-        except Exception:
-            import rembg
+        img = Image.open(io.BytesIO(image_bytes)).convert("RGB")
+        matted, model, fg = self._remove_background(img)
+        self._save_matte_debug(matted, model, fg)
+        return matted
+
+    def _remove_background(self, img_rgb) -> tuple:
+        """Cut the background so the shape pipeline sees only the object.
+
+        Returns (rgba_image, model_name, fg_fraction). Tries each model in
+        _BG_MODELS on the CPU provider and returns the first matte that passes
+        _matte_coverage_ok. If every model looks wrong it returns the closest-to-
+        sane result with a loud warning — a bad matte is what produces the floor.
+        """
+        import numpy as np
+        from rembg import remove, new_session
+        best = None
+        for model in _BG_MODELS:
             try:
-                return rembg.remove(img).convert("RGBA")
-            except Exception:
-                session = rembg.new_session("u2net", providers=["CPUExecutionProvider"])
-                return rembg.remove(img, session=session).convert("RGBA")
+                session = new_session(model, providers=["CPUExecutionProvider"])
+                out = remove(img_rgb, session=session,
+                             bgcolor=[255, 255, 255, 0]).convert("RGBA")
+            except Exception as exc:
+                print(f"[{self.MODEL_ID}] bg model {model!r} failed ({exc})")
+                continue
+            fg = float((np.asarray(out)[..., 3] > 10).mean())
+            if _matte_coverage_ok(fg):
+                print(f"[{self.MODEL_ID}] background removed via {model} "
+                      f"(foreground {fg * 100:.0f}%)")
+                return out, model, fg
+            print(f"[{self.MODEL_ID}] {model} matte suspect "
+                  f"(foreground {fg * 100:.0f}%); escalating")
+            if best is None or abs(fg - 0.30) < abs(best[2] - 0.30):
+                best = (out, model, fg)
+        if best is not None:
+            print(f"[{self.MODEL_ID}] WARNING: every matte looked wrong; using best "
+                  f"({best[1]}, foreground {best[2] * 100:.0f}%). A backdrop/floor may "
+                  f"appear — try a cleaner input image.")
+            return best
+        # rembg unavailable entirely: don't crash the run. An opaque alpha means the
+        # pipeline may add a slab, but the mesh still generates.
+        print(f"[{self.MODEL_ID}] WARNING: background removal unavailable; "
+              f"passing the raw image (a floor is likely).")
+        return img_rgb.convert("RGBA"), "none", 1.0
+
+    def _save_matte_debug(self, matted, model: str, fg: float) -> None:
+        """Persist the exact matte the shape model will see, for later diagnosis."""
+        try:
+            self.outputs_dir.mkdir(parents=True, exist_ok=True)
+            path = self.outputs_dir / "_last_input_matte.png"
+            matted.save(path)
+            print(f"[{self.MODEL_ID}] saved input matte -> {path} "
+                  f"(model={model}, foreground={fg * 100:.0f}%)")
+        except Exception as exc:
+            print(f"[{self.MODEL_ID}] matte debug save skipped ({exc})")
 
     def _decimate(self, mesh, target_faces: int):
         try:

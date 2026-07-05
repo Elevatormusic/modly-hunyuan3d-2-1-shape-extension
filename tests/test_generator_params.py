@@ -110,5 +110,41 @@ class TestParams(unittest.TestCase):
         self.assertEqual(params["use_shared_vram"].default, False)
 
 
+class TestBackgroundRemoval(unittest.TestCase):
+    def _mod(self):
+        _install_services_stub()
+        import generator
+        return generator
+
+    def test_matte_coverage_ok_boundaries(self):
+        m = self._mod()
+        self.assertTrue(m._matte_coverage_ok(0.30))     # a normal object
+        self.assertFalse(m._matte_coverage_ok(0.0))     # object erased
+        self.assertFalse(m._matte_coverage_ok(1.0))     # background kept -> floor
+        self.assertFalse(m._matte_coverage_ok(0.95))    # near-opaque -> floor risk
+        self.assertFalse(m._matte_coverage_ok(0.02))    # lower bound exclusive
+        self.assertFalse(m._matte_coverage_ok(0.92))    # upper bound exclusive
+
+    def test_bg_models_u2net_first_isnet_fallback(self):
+        m = self._mod()
+        self.assertEqual(m._BG_MODELS[0], "u2net")
+        self.assertIn("isnet-general-use", m._BG_MODELS)
+
+    def test_remove_background_and_debug_methods_exist(self):
+        self._mod()
+        from generator import Hunyuan3DShapeV21Generator as G
+        self.assertTrue(hasattr(G, "_remove_background"))
+        self.assertTrue(hasattr(G, "_save_matte_debug"))
+
+    def test_preprocess_forces_cpu_and_drops_backgroundremover(self):
+        import inspect
+        self._mod()
+        from generator import Hunyuan3DShapeV21Generator as G
+        # Matting must never touch the broken CUDA provider.
+        self.assertIn("CPUExecutionProvider", inspect.getsource(G._remove_background))
+        # The old vendored BackgroundRemover path (RGBA-in, no sanity guard) is gone.
+        self.assertNotIn("BackgroundRemover", inspect.getsource(G._preprocess))
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -196,15 +196,17 @@ def setup(
     # ------------------------------------------------------------------ #
     # rembg (background removal)
     # ------------------------------------------------------------------ #
-    print("[setup] Installing rembg …")
-    if is_mac or is_linux_arm64 or torch_flavor == "rocm":
-        pip(venv, "install", "rembg")
-        pip(venv, "install", "onnxruntime")
-    elif gpu_sm >= 70:
-        pip(venv, "install", "rembg[gpu]")
-    else:
-        pip(venv, "install", "rembg")
-        pip(venv, "install", "onnxruntime")
+    # rembg only runs a ~1 s u2net matte, and generator._remove_background forces
+    # the CPU execution provider — so it needs plain CPU onnxruntime, NOT
+    # onnxruntime-gpu. rembg[gpu]'s wheels track a newer CUDA (13: cublasLt64_13)
+    # than our pinned torch (cu128 / CUDA 12.8), so on the CUDA path it installed a
+    # provider that can't load and silently fell back to CPU anyway — while also
+    # co-installing onnxruntime + onnxruntime-gpu (a namespace clash). Plain CPU
+    # rembg behaves identically on every machine and removes that whole class of
+    # CUDA-mismatch breakage for all installers.
+    print("[setup] Installing rembg (CPU onnxruntime) …")
+    pip(venv, "install", "rembg")
+    pip(venv, "install", "onnxruntime")
 
     # ------------------------------------------------------------------ #
     # Texture (paint) dependencies. Split into two groups so a failure in
