@@ -66,28 +66,6 @@ def _matte_coverage_ok(fg_fraction: float) -> bool:
     return 0.02 < fg_fraction < 0.92
 
 
-def _creep_elapsed(progress_cb, start, end, base_label, stop, interval=4.0):
-    """Progress creeper that never looks frozen during a long blocking stage.
-
-    Unlike smooth_progress (which climbs to end-2 then STOPS — looking stuck for the
-    many minutes the paint takes), this advances the percent asymptotically toward
-    `end` AND appends live elapsed time to the label, so every tick visibly moves.
-    """
-    t0 = time.time()
-    cap = end - 1
-    current = float(start)
-    progress_cb(int(current), f"{base_label} (0s)")
-    while not stop.is_set():
-        stop.wait(interval)
-        if stop.is_set():
-            break
-        current += (cap - current) * 0.12
-        el = int(time.time() - t0)
-        m, s = divmod(el, 60)
-        et = f"{m}m {s:02d}s" if m else f"{s}s"
-        progress_cb(int(current), f"{base_label} ({et})")
-
-
 def _prewarm_hf_symlink_check(repo_id: str) -> None:
     """Work around a Windows race in huggingface_hub's parallel downloader.
 
@@ -523,6 +501,12 @@ class Hunyuan3DShapeV21Generator(BaseGenerator):
         # download can't crash with WinError 1314 on non-developer-mode Windows.
         _prewarm_hf_symlink_check(_HF_REPO_ID)
 
+        # Calibration telemetry: reset the CUDA peak counters here so the number
+        # logged after the paint call is the TRUE paint-stage peak (model load +
+        # inference). Feeds capacity._TEX_PEAK tier-seed calibration (see runbook).
+        if torch.cuda.is_available():
+            torch.cuda.reset_peak_memory_stats()
+
         paint_pipeline = Hunyuan3DPaintPipeline(conf)
 
         # The paint pipeline works from files: write the shape mesh + input image.
@@ -555,20 +539,22 @@ class Hunyuan3DShapeV21Generator(BaseGenerator):
         # no-op, so trimesh then mis-read that file as GLB ("incorrect header on
         # GLB file"). Give it a temp ".obj" and move the produced ".glb" to out_path.
         tex_obj = str(tmp_dir / "textured.obj")
-        # paint_pipeline() is one long blocking call with no sub-progress, so the
-        # bar would dead-stop at 74% for many minutes (the multiview diffusion +
-        # the CPU-bound cv2.inpaint / bake stretch report nothing). Creep the bar
-        # 74 -> 94 on a daemon thread — exactly like the shape stage above — so it
-        # never looks hung. Purely cosmetic; does not touch the compute.
+        # paint_pipeline() is one long blocking call. Real sub-progress comes from
+        # the vendored paint stages calling eb_accel.report() (hook registered just
+        # below): per denoise step (74->88) + post-diffusion milestones (88->94).
         self._report(progress_cb, 74, "Painting textures…")
-        paint_stop = threading.Event()
-        if progress_cb:
-            pt = threading.Thread(
-                target=_creep_elapsed,
-                args=(progress_cb, 74, 94, "Painting textures…", paint_stop),
-                daemon=True,
-            )
-            pt.start()
+        # Real progress: register a hook the vendored paint stages call. The
+        # multiview diffusion reports per denoise step (74->88, via the
+        # multiview_utils patch in _patch_gpu_accel) and the post-diffusion stages
+        # report milestones (88->94, textureGenPipeline patch). Replaces the old
+        # cosmetic creep. eb_accel.report() swallows errors, so a missing patch
+        # only leaves the bar static — it can never break the render.
+        try:
+            import eb_accel
+            eb_accel.set_progress_hook(
+                (lambda p, l: self._report(progress_cb, p, l)) if progress_cb else None)
+        except Exception:
+            pass
         try:
             paint_pipeline(
                 mesh_path=str(in_glb),
@@ -577,6 +563,13 @@ class Hunyuan3DShapeV21Generator(BaseGenerator):
                 use_remesh=False,   # skip Blender-based remesh (bpy removed)
                 save_glb=True,
             )
+            if torch.cuda.is_available():
+                _pk_a = torch.cuda.max_memory_allocated() / 2**30
+                _pk_r = torch.cuda.max_memory_reserved() / 2**30
+                print(f"[{self.MODEL_ID}] paint peak: allocated {_pk_a:.1f} GB / "
+                      f"reserved {_pk_r:.1f} GB (tier={_plan.tier} "
+                      f"render={_plan.render_size} texture={_plan.texture_size} "
+                      f"tex_res={tex_resolution})")
             produced_glb = tex_obj[:-4] + ".glb"
             if not os.path.exists(produced_glb):
                 raise RuntimeError(
@@ -600,7 +593,11 @@ class Hunyuan3DShapeV21Generator(BaseGenerator):
                 print(f"[{self.MODEL_ID}] BPT mesh: skipping normal bake "
                       f"(regenerated surface would misregister the bake)")
         finally:
-            paint_stop.set()
+            try:
+                import eb_accel
+                eb_accel.set_progress_hook(None)
+            except Exception:
+                pass
             del paint_pipeline
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
@@ -797,6 +794,78 @@ class Hunyuan3DShapeV21Generator(BaseGenerator):
                 )
                 tgp.write_text(text.replace(anchor, inject), encoding="utf-8")
                 print(f"[{self.MODEL_ID}] patched free-diffusion-before-bake into textureGenPipeline.py")
+
+        # 7. Real progress bar. Wire the paint stages to eb_accel.report():
+        # (a) the multiview diffusion fires callback_on_step_end per denoise step
+        #     (74->88%); (b) the post-diffusion stages emit milestones (88->94%).
+        # _run_texture registers the hook; report() swallows errors, so a missing
+        # patch only leaves the bar static — never breaks the render. Anchored on
+        # PRISTINE strings; 7b runs after 1 (its anchors need eb_accel.super_resolve_batch).
+        mu = paint_src / "utils" / "multiview_utils.py"
+        if mu.exists():
+            text = mu.read_text(encoding="utf-8")
+            old = (
+                '        mvd_image = self.pipeline(\n'
+                '            input_images[0:1],\n'
+                '            num_inference_steps=infer_steps_dict[self.pipeline.scheduler.__class__.__name__],\n'
+                '            prompt=prompt,\n'
+                '            sync_condition=sync_condition,\n'
+                '            guidance_scale=3.0,\n'
+                '            **kwargs,\n'
+                '        ).images'
+            )
+            new = (
+                '        _eb_steps = infer_steps_dict[self.pipeline.scheduler.__class__.__name__]\n'
+                '\n'
+                '        def _eb_progress_cb(_pipe, _i, _t, _kw):\n'
+                '            try:\n'
+                '                import eb_accel\n'
+                '                eb_accel.report(74 + int(14 * (_i + 1) / max(_eb_steps, 1)), "Painting textures…")\n'
+                '            except Exception:\n'
+                '                pass\n'
+                '            return _kw\n'
+                '\n'
+                '        mvd_image = self.pipeline(\n'
+                '            input_images[0:1],\n'
+                '            num_inference_steps=_eb_steps,\n'
+                '            prompt=prompt,\n'
+                '            sync_condition=sync_condition,\n'
+                '            guidance_scale=3.0,\n'
+                '            callback_on_step_end=_eb_progress_cb,\n'
+                '            **kwargs,\n'
+                '        ).images'
+            )
+            if "callback_on_step_end=_eb_progress_cb" not in text and old in text:
+                mu.write_text(text.replace(old, new), encoding="utf-8")
+                print(f"[{self.MODEL_ID}] patched per-step progress callback into multiview_utils.py")
+
+        # 7b. Post-diffusion progress milestones in textureGenPipeline.
+        tgp = paint_src / "textureGenPipeline.py"
+        if tgp.exists():
+            text = tgp.read_text(encoding="utf-8")
+            if "eb_accel.report(88" not in text and "eb_accel.super_resolve_batch" in text:
+                text = text.replace(
+                    '        enhance_images["albedo"] = eb_accel.super_resolve_batch(',
+                    '        eb_accel.report(88, "Upscaling views…")\n'
+                    '        enhance_images["albedo"] = eb_accel.super_resolve_batch(', 1)
+                text = text.replace(
+                    '        ###########  Bake  ##########\n'
+                    '        texture, mask = self.view_processor.bake_from_multiview(',
+                    '        ###########  Bake  ##########\n'
+                    '        eb_accel.report(90, "Baking texture…")\n'
+                    '        texture, mask = self.view_processor.bake_from_multiview(', 1)
+                text = text.replace(
+                    '        ##########  inpaint  ###########\n'
+                    '        texture = self.view_processor.texture_inpaint(',
+                    '        ##########  inpaint  ###########\n'
+                    '        eb_accel.report(92, "Inpainting…")\n'
+                    '        texture = self.view_processor.texture_inpaint(', 1)
+                text = text.replace(
+                    '        self.render.save_mesh(output_mesh_path',
+                    '        eb_accel.report(94, "Saving mesh…")\n'
+                    '        self.render.save_mesh(output_mesh_path', 1)
+                tgp.write_text(text, encoding="utf-8")
+                print(f"[{self.MODEL_ID}] patched paint-stage progress milestones into textureGenPipeline.py")
 
     @staticmethod
     def _patch_out_bpy(paint_src: Path) -> None:

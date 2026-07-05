@@ -11,6 +11,32 @@ Design rules:
 import numpy as np
 
 
+# --------------------------------------------------------------------------- #
+# 0. Progress hook. generator._run_texture registers a callback here before the
+# paint pipeline runs; the vendored multiview diffusion reports per denoise step
+# and the post-diffusion stages report milestones, driving the REAL progress bar
+# in place of the old cosmetic creep. report() swallows every error so progress
+# can never break the paint compute; if no hook is set it is a no-op.
+# --------------------------------------------------------------------------- #
+_PROGRESS_HOOK = None
+
+
+def set_progress_hook(fn):
+    """Register fn(percent:int, label:str), or clear it with None."""
+    global _PROGRESS_HOOK
+    _PROGRESS_HOOK = fn
+
+
+def report(percent, label):
+    fn = _PROGRESS_HOOK
+    if fn is None:
+        return
+    try:
+        fn(int(percent), str(label))
+    except Exception:
+        pass
+
+
 def _resolve_sr_chunk(chunk):
     """Resolve the SR batch size: explicit arg wins, else the EB_SR_CHUNK env var
     (set by the extension per texture-memory tier), else 4. Always >= 1."""
