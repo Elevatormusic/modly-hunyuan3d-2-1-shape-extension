@@ -153,6 +153,17 @@
             { "value": 0, "label": "No" }
           ],
           "tooltip": "Bake a tangent-space normal map from the full-detail mesh onto the clean base so fine detail survives cleanup. Adds a few seconds. Only applies when textures are on."
+        },
+        {
+          "id": "seam_fix",
+          "label": "Fix texture seams",
+          "type": "select",
+          "default": 1,
+          "options": [
+            { "value": 1, "label": "Yes (reconcile UV-seam color jumps)" },
+            { "value": 0, "label": "No (raw bake)" }
+          ],
+          "tooltip": "Reconcile UV-seam color jumps in the baked texture so island edges don't show hard color breaks. On by default; turn off for the raw bake. Only applies when textures are on."
         }
       ]
     }
