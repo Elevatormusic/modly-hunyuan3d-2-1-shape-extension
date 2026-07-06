@@ -4,7 +4,7 @@
   "type": "model",
   "source": "https://github.com/Elevatormusic/modly-hunyuan3d-2-1-shape-extension",
   "description": "Full-size Hunyuan3D-2.1 (3.3B params, fp16 ckpt). High-fidelity image-to-mesh geometry with an optional PBR texture pass (shape → paint, run sequentially). The texture pass adds a selectable mesh-cleanup mode (isotropic / quadric / BPT neural retopo) and a tangent-space normal-map bake that transfers dense detail onto the clean base. Shape needs ~10 GB VRAM; textures need ~21 GB plus a C++/CUDA build toolchain.",
-  "version": "1.5.0",
+  "version": "1.6.0",
   "author": "elevatormusic",
   "generator_class": "Hunyuan3DShapeV21Generator",
   "tags": ["image-to-3d", "shape", "high-fidelity"],
@@ -147,12 +147,12 @@
           "id": "bake_normal_map",
           "label": "Bake normal map",
           "type": "select",
-          "default": 1,
+          "default": 0,
           "options": [
-            { "value": 1, "label": "Yes (transfer dense detail)" },
-            { "value": 0, "label": "No" }
+            { "value": 0, "label": "No (recommended)" },
+            { "value": 1, "label": "Yes (experimental)" }
           ],
-          "tooltip": "Bake a tangent-space normal map from the full-detail mesh onto the clean base so fine detail survives cleanup. Adds a few seconds. Only applies when textures are on."
+          "tooltip": "Experimental: bakes dense detail onto the clean base as a tangent-space normal map. Off by default - on detailed meshes the current bake can add shading artifacts (tangent-basis mismatch); a corrected high-quality bake is coming. Only applies when textures are on."
         },
         {
           "id": "seam_fix",
@@ -164,6 +164,17 @@
             { "value": 0, "label": "No (raw bake)" }
           ],
           "tooltip": "Reconcile UV-seam color jumps in the baked texture so island edges don't show hard color breaks. On by default; turn off for the raw bake. Only applies when textures are on."
+        },
+        {
+          "id": "debug_sheet",
+          "label": "QA debug sheet",
+          "type": "select",
+          "default": 1,
+          "options": [
+            { "value": 1, "label": "Yes (write QA sheet)" },
+            { "value": 0, "label": "No" }
+          ],
+          "tooltip": "Write a QA image (*_qa.png) beside each textured GLB - albedo, metallic, roughness, normal, UV layout and mesh/texture stats. Diagnostic only; doesn't change the model. Only applies when textures are on."
         }
       ]
     }
