@@ -23,10 +23,11 @@ class TestWiring(unittest.TestCase):
         src = (self._repo() / "generator.py").read_text(encoding="utf-8")
         self.assertIn('"seam_fix"', src)  # present in params_schema()
 
-        # _run_texture accepts + uses seam_fix before writing, and calls apply_to_glb.
+        # _run_texture accepts seam_fix and delegates the post-paint tail to
+        # finishing.finish (which owns the seam reconcile + bake + QA stages).
         rt = src[src.index("def _run_texture"):]
         self.assertIn("seam_fix", rt)
-        self.assertIn("apply_to_glb", rt)
+        self.assertIn("finishing.finish", rt)
 
     def test_manifest_and_schema_default_agree(self):
         # Lockstep: manifest and params_schema() must agree on the seam_fix default.

@@ -45,10 +45,10 @@ class TestParams(unittest.TestCase):
         values = {o["value"] for o in schema["mesh_mode"]["options"]}
         self.assertEqual(values, {"regular", "isotropic", "bpt"})
 
-    def test_bake_normal_map_present_default_on(self):
+    def test_bake_normal_map_present_default_off(self):
         schema = self._schema()
         self.assertIn("bake_normal_map", schema)
-        self.assertEqual(schema["bake_normal_map"]["default"], 1)
+        self.assertEqual(schema["bake_normal_map"]["default"], 0)
 
     def test_target_faces_still_present(self):
         # Pre-existing CAD/print decimation param must not be clobbered.
