@@ -29,12 +29,10 @@ Wraps the full **Hunyuan3D-2.1** shape checkpoint (Tencent's 3.3B `hunyuan3d-dit
     <td><img src="assets/results/ramen-in.png" alt="ramen shop input" width="100%"></td>
     <td><img src="assets/results/ramen-out.png" alt="ramen shop 3D result" width="100%"></td>
   </tr>
-  <!-- second row: pending a clean tree viewport shot (no app UI)
   <tr>
     <td><img src="assets/results/tree-in.png" alt="tree input" width="100%"></td>
-    <td><img src="assets/results/tree-out.png" alt="tree 3D result" width="100%"></td>
+    <td><img src="assets/results/tree-out.png" alt="tree 3D result rendered on the navy backdrop" width="100%"></td>
   </tr>
-  -->
 </table>
 
 <sub>Generated on an RTX 3090 — shape at High quality, textured PBR pass. Modly's model viewport is unlit, so the same assets look richer in any lit renderer or game engine.</sub>
