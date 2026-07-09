@@ -11,30 +11,56 @@ Modly extension for the **full** [Hunyuan3D-2.1](https://huggingface.co/tencent/
 - fetches the `hy3dshape` source from the Hunyuan3D-2.1 GitHub repo
 - loads the pipeline **offline** from the local `config.yaml` + `model.fp16.ckpt`
 - exports a `.glb` mesh (optionally decimated for CAD / 3D-print workflows)
-- optionally paints **PBR textures** (shape → paint, run sequentially)
+- optionally paints **PBR textures** — albedo + packed metallic-roughness — with UV-seam reconciliation and an optional QA sheet
 
 ## Textures (optional PBR pass)
 
-Turn on **Generate textures (PBR)**. The extension runs shape first, frees the shape model from VRAM, then runs the `hy3dpaint` paint pipeline on the mesh, and finally reloads the shape model for the next run. Output is a textured `.glb` with albedo/metalness/roughness maps.
+Turn on **Generate textures (PBR)**. The extension runs shape first, frees the shape model from VRAM, then runs the `hy3dpaint` paint pipeline on the mesh, and finally reloads the shape model for the next run. Output is a textured `.glb` with an albedo map and a packed metallic-roughness map.
 
 **Prerequisites (texture pass only):**
-- **~21 GB VRAM** for the paint stage (fits a 24 GB card because stages run sequentially).
+- **~21 GB VRAM** for the paint stage (fits a 24 GB card because stages run sequentially). See **Texture memory** below to tune the ceiling.
 - A **C++/CUDA build toolchain**: Visual Studio C++ Build Tools + a CUDA toolkit (`nvcc`) matching your PyTorch CUDA (12.4). The paint pipeline builds two native modules on first use — `custom_rasterizer` (CUDA) and `mesh_inpaint_processor` (C++).
 - A large **first-run download**: `hunyuan3d-paintpbr-v2-1` weights, DINOv2-giant, and a RealESRGAN checkpoint.
 
 If the toolchain is missing, texturing fails with a clear error — **shape generation is unaffected**. Textures are **discarded** when converting to a STEP solid or Fusion Form (CAD has no surface textures); use them for renders, game assets, previews.
 
-### Mesh cleanup + normal-map detail (texture pass)
+> **Export GLB to keep the maps** — Modly's OBJ export drops textures.
 
-The raw shape mesh is a dense marching-cubes surface (~2.6M faces at high resolution). Before painting, it's cleaned into a UV-friendly base — you choose how with **Mesh cleanup**:
+### Mesh cleanup (texture pass)
 
-- **Isotropic** (default) — uniform-triangle remesh; clean, even topology.
-- **Regular** — quadric decimation (fastest).
-- **BPT neural** — Tencent's [BPT](https://github.com/Tencent-Hunyuan/bpt) artist-topology retopology (~4k faces, cleanest edge flow). First use downloads ~4 GB into an isolated sub-environment and takes a few minutes per mesh; if it's unavailable it falls back to isotropic.
+The raw shape mesh is a dense marching-cubes surface (~2.6M faces at high resolution). Before painting it's cleaned into a UV-friendly base — you choose how with **Mesh cleanup**:
 
-Because cleanup lowers the polygon count, fine surface detail would normally be lost. With **Bake normal map** on (the default), a tangent-space normal map is baked from the full-detail mesh onto the clean base, so grooves, panel lines, and vents survive as shading detail — a clean, light mesh that still looks detailed. The result is a standard glTF PBR set (albedo + metallic/roughness + normal). The bake runs on the CPU and adds a few seconds.
+- **Regular** (default) — quadric decimation; keeps one connected shell with clean UVs. The most reliable choice.
+- **Isotropic** — uniform-triangle remesh; even topology, but can shatter Hunyuan's non-watertight surfaces into many UV islands (auto-falls back to Regular).
+- **BPT neural** — Tencent's [BPT](https://github.com/Tencent-Hunyuan/bpt) artist-topology retopology (~4k faces, cleanest edge flow). First use downloads ~4 GB into an isolated sub-environment and takes a few minutes per mesh; falls back to Regular if unavailable.
 
-> **Tip:** export **GLB** to keep the maps — Modly's OBJ export drops textures. Baking is skipped automatically (with a logged note) if anything goes wrong, so a generation never fails because of it.
+### Texture maps
+
+The paint pass produces a standard glTF PBR set:
+
+- **Albedo** (base color).
+- **Metallic-roughness** — the baked metallic and roughness maps, packed into a single glTF-standard image (roughness in the green channel, metallic in blue) and wired into the GLB material.
+
+**Fix texture seams** (on by default) reconciles color jumps across UV-island edges in the baked albedo and metallic-roughness, so chart boundaries don't show as hard color breaks, then dilates colour into the UV gutter so seams stay clean under mip-mapping. Turn it off for the raw bake.
+
+### Normal-map bake (experimental, off by default)
+
+**Bake normal map** transfers dense detail from the full-resolution mesh onto the clean base as a tangent-space normal map, so grooves and panel lines can survive cleanup as shading detail. It is **off by default and experimental**: on detailed / hard-surface meshes the current bake can introduce shading artifacts (a tangent-basis mismatch between the bake and the glTF viewer). A corrected high-quality bake is planned. On smooth subjects it adds little. Only applies when textures are on.
+
+### QA debug sheet
+
+**QA debug sheet** (on by default) writes a `*_qa.png` beside each textured GLB showing the albedo, metallic, roughness and normal maps, the UV layout, and mesh / texture stats. It's diagnostic only and doesn't change the model — useful for checking whether a colour that looks off is the texture itself or just your viewer's material preview.
+
+### Texture memory & shared GPU memory
+
+**Texture memory** caps the paint pass's VRAM so it can't silently spill into system RAM and crawl:
+
+- **Low** — smallest / softest.
+- **Balanced** (default) — targets a ~20 GB peak on 24 GB cards.
+- **High** — sharpest; wants an otherwise-empty GPU.
+- **Max** — 4096 texture; may need shared GPU memory.
+
+The cap is adaptive: on a busy GPU the pass may step down a tier to fit. **Use shared GPU memory** lets High / Max run past your VRAM by paging to system RAM over PCIe — much slower (tens of minutes) and needs a large Windows page file. Leave it off unless you want maximum quality and don't mind the wait.
 
 ## How it differs from the Hunyuan3D-2 Mini extension
 
@@ -47,9 +73,9 @@ Because cleanup lowers the polygon count, fine surface detail would normally be 
 
 ## Requirements
 
-- NVIDIA GPU with **≥ 10 GB VRAM** for the shape stage (an RTX 3090 / 24 GB is comfortable)
-- ~10 GB free disk for weights + source
-- Windows or Linux (CUDA). macOS/MPS falls back to fp32 and is slow/untested for the full model.
+- NVIDIA GPU with **≥ 10 GB VRAM** for the shape stage (an RTX 3090 / 24 GB is comfortable; the texture pass wants ~21 GB)
+- ~10 GB free disk for weights + source (more for the texture-pass downloads)
+- Windows or Linux (CUDA). macOS/MPS falls back to fp32 and is slow / untested for the full model.
 
 ## Install
 
@@ -66,16 +92,23 @@ Because cleanup lowers the polygon count, fine surface detail would normally be 
 
 ## Parameters
 
+**Shape**
 - **Quality** — diffusion steps (30 / 50 / 75)
 - **Mesh Resolution** — octree resolution (256 / 384 / 512)
 - **Guidance Scale** — how closely the mesh follows the input image
 - **Decimate (for CAD/print)** — optional polygon reduction on export
 - **Seed** — reproducibility
+
+**Textures (PBR)**
 - **Generate textures (PBR)** — enable the paint pass (see prerequisites above)
 - **Texture view resolution** — 512 / 768 per-view render size
-- **Texture views** — number of camera views painted/baked (6–9)
-- **Mesh cleanup** — how the shape mesh is cleaned before texturing: Isotropic (default) / Regular / BPT neural (see above)
-- **Bake normal map** — bake dense-mesh detail onto the clean base as a tangent-space normal map (on by default)
+- **Texture views** — number of camera views painted / baked (6–9)
+- **Texture memory** — VRAM ceiling for the paint pass (Low / Balanced / High / Max)
+- **Use shared GPU memory** — allow High / Max to page into system RAM (slow)
+- **Mesh cleanup** — Regular (default) / Isotropic / BPT neural
+- **Bake normal map** — experimental, off by default (see above)
+- **Fix texture seams** — reconcile UV-seam colour jumps (on by default)
+- **QA debug sheet** — write a `*_qa.png` diagnostic beside the GLB (on by default)
 
 ## Upstream sources
 
