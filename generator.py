@@ -178,9 +178,11 @@ class Hunyuan3DShapeV21Generator(BaseGenerator):
         tex_resolution = int(params.get("texture_resolution", 512))
         max_num_view   = int(params.get("max_num_view", 6))
         mesh_mode      = str(params.get("mesh_mode", "regular"))
-        bake_normal    = int(params.get("bake_normal_map", 1)) == 1
+        bake_normal    = int(params.get("bake_normal_map", 0)) == 1
         texture_memory = str(params.get("texture_memory", "balanced"))
         use_shared_vram = int(params.get("use_shared_vram", 0)) == 1
+        seam_fix       = int(params.get("seam_fix", 1)) == 1
+        debug_sheet    = int(params.get("debug_sheet", 1)) == 1
         seed           = int(params.get("seed", -1))
         if seed == -1:
             seed = random.randint(0, 2**32 - 1)
@@ -279,6 +281,8 @@ class Hunyuan3DShapeV21Generator(BaseGenerator):
                 mesh_mode=mesh_mode, bake_normal_map=bake_normal,
                 texture_memory=texture_memory,
                 use_shared_vram=use_shared_vram,
+                seam_fix=seam_fix,
+                debug_sheet=debug_sheet,
             )
             self.load()  # restore shape model for the next run
         else:
@@ -423,9 +427,11 @@ class Hunyuan3DShapeV21Generator(BaseGenerator):
     def _run_texture(
         self, mesh, image, out_path: str,
         tex_resolution: int = 512, max_num_view: int = 6, progress_cb=None,
-        mesh_mode: str = "isotropic", bake_normal_map: bool = True,
+        mesh_mode: str = "isotropic", bake_normal_map: bool = False,
         texture_memory: str = "balanced",
         use_shared_vram: bool = False,
+        seam_fix: bool = True,
+        debug_sheet: bool = True,
     ) -> None:
         """
         Paint PBR textures onto the shape mesh and write a textured GLB to
@@ -578,20 +584,18 @@ class Hunyuan3DShapeV21Generator(BaseGenerator):
                 os.replace(produced_glb, out_path)
             except OSError:
                 shutil.move(produced_glb, out_path)
-            # Bake the dense mesh's fine detail onto the clean base as a normal map —
-            # but NOT for BPT: it regenerates the surface, so a high->low bake
-            # misregisters and produces blotches (ship clean-but-flat instead).
-            import capacity
-            if capacity.should_bake(bake_normal_map, mesh_mode):
-                try:
-                    import normal_bake
-                    self._report(progress_cb, 95, "Baking normal map…")
-                    normal_bake.bake_normal_map(dense_for_bake, out_path, size=_plan.texture_size)
-                except Exception as exc:
-                    print(f"[{self.MODEL_ID}] normal bake skipped ({exc})")
-            elif bake_normal_map and mesh_mode == "bpt":
-                print(f"[{self.MODEL_ID}] BPT mesh: skipping normal bake "
-                      f"(regenerated surface would misregister the bake)")
+            # Post-paint finishing pipeline: seam reconcile -> (optional) normal
+            # bake -> structural validation -> QA debug sheet. Each stage is
+            # non-fatal; finishing.finish() never raises, so the paint ships.
+            import finishing
+            finishing.finish(
+                out_path, tex_obj,
+                dense_mesh=dense_for_bake, texture_size=_plan.texture_size,
+                mesh_mode=mesh_mode, bake_normal_map=bake_normal_map,
+                seam_fix=seam_fix, debug_sheet=debug_sheet,
+                input_image_path=str(in_png),
+                report=(lambda p, l: self._report(progress_cb, p, l)) if progress_cb else None,
+            )
         finally:
             try:
                 import eb_accel
@@ -895,22 +899,27 @@ class Hunyuan3DShapeV21Generator(BaseGenerator):
         text += (
             "\n\n# --- bpy-free patch ---\n"
             "def convert_obj_to_glb(obj_path, glb_path, *args, **kwargs):  # noqa: F811\n"
-            "    \"\"\"OBJ->GLB via trimesh (no Blender); force non-metallic so the baked albedo shows.\"\"\"\n"
-            "    import trimesh\n"
-            "    from trimesh.visual.material import PBRMaterial\n"
-            "    scene = trimesh.load(obj_path, process=False)\n"
-            "    geoms = scene.geometry.values() if hasattr(scene, 'geometry') else [scene]\n"
-            "    for g in geoms:\n"
-            "        v = getattr(g, 'visual', None)\n"
-            "        mat = getattr(v, 'material', None)\n"
-            "        img = (getattr(mat, 'baseColorTexture', None) or getattr(mat, 'image', None)) if mat else None\n"
-            "        uv = getattr(v, 'uv', None)\n"
-            "        if img is not None and uv is not None:\n"
-            "            g.visual = trimesh.visual.TextureVisuals(\n"
-            "                uv=uv, material=PBRMaterial(baseColorTexture=img,\n"
-            "                    baseColorFactor=[255, 255, 255, 255], metallicFactor=0.0, roughnessFactor=1.0))\n"
-            "    scene.export(glb_path)\n"
-            "    return True\n"
+            "    \"\"\"OBJ->GLB: wire albedo + baked metallic-roughness (mr_export);\n"
+            "    fall back to flat albedo-only PBR on any error.\"\"\"\n"
+            "    try:\n"
+            "        import mr_export\n"
+            "        return mr_export.build_glb_with_mr(obj_path, glb_path)\n"
+            "    except Exception:\n"
+            "        import trimesh\n"
+            "        from trimesh.visual.material import PBRMaterial\n"
+            "        scene = trimesh.load(obj_path, process=False)\n"
+            "        geoms = scene.geometry.values() if hasattr(scene, 'geometry') else [scene]\n"
+            "        for g in geoms:\n"
+            "            v = getattr(g, 'visual', None)\n"
+            "            mat = getattr(v, 'material', None)\n"
+            "            img = (getattr(mat, 'baseColorTexture', None) or getattr(mat, 'image', None)) if mat else None\n"
+            "            uv = getattr(v, 'uv', None)\n"
+            "            if img is not None and uv is not None:\n"
+            "                g.visual = trimesh.visual.TextureVisuals(\n"
+            "                    uv=uv, material=PBRMaterial(baseColorTexture=img,\n"
+            "                        baseColorFactor=[255, 255, 255, 255], metallicFactor=0.0, roughnessFactor=1.0))\n"
+            "        scene.export(glb_path)\n"
+            "        return True\n"
         )
         mu.write_text(text, encoding="utf-8")
         print(f"[{__name__}] patched bpy out of {mu}")
@@ -1288,11 +1297,33 @@ class Hunyuan3DShapeV21Generator(BaseGenerator):
                 "id": "bake_normal_map",
                 "label": "Bake normal map",
                 "type": "select",
+                "default": 0,
+                "options": [
+                    {"value": 0, "label": "No (recommended)"},
+                    {"value": 1, "label": "Yes (experimental)"},
+                ],
+                "tooltip": "Experimental: bakes dense detail onto the clean base as a tangent-space normal map. Off by default - on detailed meshes the current bake can add shading artifacts (tangent-basis mismatch); a corrected high-quality bake is coming. Only applies when textures are on.",
+            },
+            {
+                "id": "seam_fix",
+                "label": "Fix texture seams",
+                "type": "select",
                 "default": 1,
                 "options": [
-                    {"value": 1, "label": "Yes (transfer dense detail)"},
+                    {"value": 1, "label": "Yes (reconcile UV-seam color jumps)"},
+                    {"value": 0, "label": "No (raw bake)"},
+                ],
+                "tooltip": "Reconcile UV-seam color jumps in the baked texture so island edges don't show hard color breaks. On by default; turn off for the raw bake. Only applies when textures are on.",
+            },
+            {
+                "id": "debug_sheet",
+                "label": "QA debug sheet",
+                "type": "select",
+                "default": 1,
+                "options": [
+                    {"value": 1, "label": "Yes (write QA sheet)"},
                     {"value": 0, "label": "No"},
                 ],
-                "tooltip": "Bake a tangent-space normal map from the full-detail mesh onto the clean base so fine detail survives cleanup. Adds a few seconds. Only applies when textures are on.",
+                "tooltip": "Write a QA image (*_qa.png) beside each textured GLB - albedo, metallic, roughness, normal, UV layout and mesh/texture stats. Diagnostic only; doesn't change the model. Only applies when textures are on.",
             },
         ]
