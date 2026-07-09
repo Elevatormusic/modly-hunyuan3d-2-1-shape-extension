@@ -182,7 +182,7 @@ class Hunyuan3DShapeV21Generator(BaseGenerator):
         texture_memory = str(params.get("texture_memory", "balanced"))
         use_shared_vram = int(params.get("use_shared_vram", 0)) == 1
         seam_fix       = int(params.get("seam_fix", 1)) == 1
-        debug_sheet    = int(params.get("debug_sheet", 1)) == 1
+        debug_sheet    = int(params.get("debug_sheet", 0)) == 1
         seed           = int(params.get("seed", -1))
         if seed == -1:
             seed = random.randint(0, 2**32 - 1)
@@ -431,7 +431,7 @@ class Hunyuan3DShapeV21Generator(BaseGenerator):
         texture_memory: str = "balanced",
         use_shared_vram: bool = False,
         seam_fix: bool = True,
-        debug_sheet: bool = True,
+        debug_sheet: bool = False,
     ) -> None:
         """
         Paint PBR textures onto the shape mesh and write a textured GLB to
@@ -1319,11 +1319,11 @@ class Hunyuan3DShapeV21Generator(BaseGenerator):
                 "id": "debug_sheet",
                 "label": "QA debug sheet",
                 "type": "select",
-                "default": 1,
+                "default": 0,
                 "options": [
+                    {"value": 0, "label": "No (default)"},
                     {"value": 1, "label": "Yes (write QA sheet)"},
-                    {"value": 0, "label": "No"},
                 ],
-                "tooltip": "Write a QA image (*_qa.png) beside each textured GLB - albedo, metallic, roughness, normal, UV layout and mesh/texture stats. Diagnostic only; doesn't change the model. Only applies when textures are on.",
+                "tooltip": "Optional diagnostic: writes a QA image (*_qa.png) beside each textured GLB - albedo, metallic, roughness, normal, UV layout and mesh/texture stats. Off by default; turn on when checking texture quality. Doesn't change the model. Only applies when textures are on.",
             },
         ]

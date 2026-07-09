@@ -169,12 +169,12 @@
           "id": "debug_sheet",
           "label": "QA debug sheet",
           "type": "select",
-          "default": 1,
+          "default": 0,
           "options": [
-            { "value": 1, "label": "Yes (write QA sheet)" },
-            { "value": 0, "label": "No" }
+            { "value": 0, "label": "No (default)" },
+            { "value": 1, "label": "Yes (write QA sheet)" }
           ],
-          "tooltip": "Write a QA image (*_qa.png) beside each textured GLB - albedo, metallic, roughness, normal, UV layout and mesh/texture stats. Diagnostic only; doesn't change the model. Only applies when textures are on."
+          "tooltip": "Optional diagnostic: writes a QA image (*_qa.png) beside each textured GLB - albedo, metallic, roughness, normal, UV layout and mesh/texture stats. Off by default; turn on when checking texture quality. Doesn't change the model. Only applies when textures are on."
         }
       ]
     }
