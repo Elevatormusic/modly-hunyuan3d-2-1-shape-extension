@@ -50,22 +50,26 @@ class TestVramPlan(unittest.TestCase):
 
 class TestPlanTextureMemory(unittest.TestCase):
     def test_empty_card_picks_ceiling_high(self):
+        # 24 GB free, ceiling High: High peak 13.5 + margin 6 = 19.5 <= 24 -> High,
+        # which is the stock (render 2048 / texture 4096) tier. Fits pure VRAM -> no warning.
         p = capacity.plan_texture_memory(24, "high")
         self.assertEqual(p.tier, "high")
-        self.assertEqual((p.render_size, p.texture_size, p.sr_chunk), (1536, 2048, 4))
+        self.assertEqual((p.render_size, p.texture_size, p.sr_chunk), (2048, 4096, 4))
         self.assertIsNone(p.warning)
 
     def test_ceiling_clamps_below_band(self):
         # 24 GB free would allow High, but the user's ceiling is Low.
         p = capacity.plan_texture_memory(24, "low")
         self.assertEqual(p.tier, "low")
-        self.assertEqual((p.render_size, p.texture_size, p.sr_chunk), (1024, 1024, 1))
+        self.assertEqual((p.render_size, p.texture_size, p.sr_chunk), (1536, 2048, 2))
 
-    def test_high_gated_when_tight_falls_to_balanced(self):
-        # ~22 GB free: High (needs ~23.5) doesn't fit, Balanced (~21.5) does.
-        p = capacity.plan_texture_memory(22, "high")
-        self.assertEqual(p.tier, "balanced")
-        self.assertEqual((p.render_size, p.texture_size, p.sr_chunk), (1024, 2048, 2))
+    def test_ceiling_gated_when_tight_falls_to_low(self):
+        # The upper tiers (balanced/high/max) now share peak 13.5 -> threshold 13.5+6=19.5;
+        # Low's threshold is 12.5+6=18.5. At 19 GB free the Balanced ceiling can't fit
+        # (19.5 > 19) so the planner gates DOWN to Low (18.5 <= 19), the reduced fallback tier.
+        p = capacity.plan_texture_memory(19, "balanced")
+        self.assertEqual(p.tier, "low")
+        self.assertEqual((p.render_size, p.texture_size, p.sr_chunk), (1536, 2048, 2))
 
     def test_below_floor_warns_and_hints_offload(self):
         p = capacity.plan_texture_memory(17, "balanced")
@@ -108,9 +112,11 @@ class TestApplyTexturePlan(unittest.TestCase):
 
 class TestMaxTier(unittest.TestCase):
     def test_max_reachable_via_ceiling(self):
+        # 24 GB free, ceiling Max: Max peak 13.5 + margin 6 = 19.5 <= 24 -> Max,
+        # the stock tier (render 2048 / texture 4096).
         p = capacity.plan_texture_memory(24, "max")
         self.assertEqual(p.tier, "max")
-        self.assertEqual((p.render_size, p.texture_size, p.sr_chunk), (1536, 4096, 4))
+        self.assertEqual((p.render_size, p.texture_size, p.sr_chunk), (2048, 4096, 4))
 
     def test_ceiling_high_never_gives_max(self):
         p = capacity.plan_texture_memory(24, "high")
@@ -153,10 +159,10 @@ class TestExtraBudget(unittest.TestCase):
         self.assertEqual(a, b)
 
     def test_toggle_off_never_pages(self):
-        # 22 GB free, no extra budget: High won't fit (needs 23.5) -> Balanced (21.5<=22),
-        # which fits pure VRAM (peak 19.5 <= 22) -> no paging warning.
+        # 22 GB free, no extra budget: High fits its budget (13.5+6=19.5 <= 22) and its
+        # peak 13.5 <= 22 free VRAM, so it runs entirely in real VRAM -> no paging warning.
         p = capacity.plan_texture_memory(22, "high")
-        self.assertEqual(p.tier, "balanced")
+        self.assertEqual(p.tier, "high")
         self.assertIsNone(p.warning)
 
 

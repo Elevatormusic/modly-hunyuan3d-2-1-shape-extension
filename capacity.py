@@ -25,7 +25,7 @@ def shape_vram(octree_res: int) -> float:
 
 
 def paint_vram(tex_resolution: int, max_num_view: int) -> float:
-    extra = (3.0 if int(tex_resolution) >= 768 else 0.0) + max(0, int(max_num_view) - 6) * 0.6
+    extra = (8.0 if int(tex_resolution) >= 768 else 0.0) + max(0, int(max_num_view) - 6) * 0.6
     return _PAINT_BASE + extra
 
 
@@ -33,21 +33,33 @@ TexturePlan = namedtuple(
     "TexturePlan", "render_size texture_size sr_chunk tier offload_hint warning")
 
 # tier -> (render_size, texture_size, sr_chunk), low -> high -> max
+# render_size is the per-view BAKE resolution (MeshRender.back_project samples each
+# painted view into the UV atlas at this resolution) — it is the single biggest driver
+# of texture sharpness. STOCK Hunyuan bakes at 2048; the old tiers capped it to
+# 1024-1536 to save VRAM and that is what made our textures muddy/blotchy vs stock.
+# free-before-bake frees the ~15-18 GB diffusion net BEFORE the bake, so a full
+# 2048 bake + 4096 atlas fits comfortably (~13-16 GB measured; Tencent quote 12 GB for
+# the whole pipeline). So the default now delivers STOCK quality; 'low' is the single
+# reduced tier for genuinely small (<12 GB) cards. Seeds recalibrated on-device.
 _TEX_TIERS = {
-    "low":      (1024, 1024, 1),
-    "balanced": (1024, 2048, 2),
-    "high":     (1536, 2048, 4),
-    "max":      (1536, 4096, 4),
+    "low":      (1536, 2048, 2),   # reduced fallback for tight VRAM
+    "balanced": (2048, 4096, 4),   # STOCK quality (render 2048 / texture 4096) — default
+    "high":     (2048, 4096, 4),   # stock
+    "max":      (2048, 4096, 4),   # stock (2048 is the paint's native bake res — the ceiling)
 }
 _TIER_ORDER = ["low", "balanced", "high", "max"]
-# Seed peak-VRAM (GB) per tier on a 24 GB card, shape freed AND diffusion freed before
-# the bake (free-before-bake, see the textureGenPipeline patch). Because texture_size lives
-# in the (post-free) bake stage, Max ~= High in VRAM. Engineering seeds pending on-device
-# calibration (see private/runbooks/2026-07-03-texture-memory-calibration.md). Anchored to
-# the measured ~22-23.6 GB at render=2048/tex=2048/chunk=4, minus per-lever deltas (render
-# 2048->1536 ~-0.7, ->1024 ~-1.5; chunk 4->2 ~-1.5, ->1 ~-2.0; texture 2048->1024 ~-0.4).
-_TEX_PEAK = {"high": 21.5, "balanced": 19.5, "low": 18.5, "max": 21.5}
-_TEX_MARGIN = 2.0   # WDDM/fragmentation headroom
+# Seed peak-VRAM (GB) per tier = the paint-stage peak with free-before-bake (the diffusion
+# net is deleted before SR/bake, so texture_size is nearly free and the tiers barely differ
+# — Low/Balanced/Max measured 12.9/13.0/13.4 GB allocated, ~19-20 GB reserved, at render
+# 1024-1536 / tex_res 512 on-device 2026-07-04). PROVISIONAL bumps for the new render=2048
+# tiers, refined by an on-device run (the paint-peak telemetry logs allocated/reserved). The
+# real memory driver is tex_res (512->768 adds ~7 GB), handled by `extra` in plan_texture_memory.
+# Measured on-device 2026-07-04 (render 2048 / texture 4096, penguin, free-before-bake):
+# tex_res 512 -> 13.4 GB allocated / 20.4 GB reserved; tex_res 768 -> 21.1 / 35.4 (shared).
+# Seed = allocated base at tex_res 512 (render_size barely moves it — 1536 and 2048 both 13.4);
+# the +6 margin covers the reserved-minus-allocated gap so the budget check ~= true footprint.
+_TEX_PEAK = {"low": 12.5, "balanced": 13.5, "high": 13.5, "max": 13.5}
+_TEX_MARGIN = 6.0   # reserved runs ~7 GB above allocated (torch caching); check ~= reserved footprint
 
 
 def _tex_tier_index(tier):
@@ -73,7 +85,7 @@ def plan_texture_memory(free_gb, tier_ceiling="balanced",
         budget = free
     ceiling_i = _tex_tier_index(tier_ceiling)
     # same demand shape as paint_vram(): the two diffusion quality knobs cost extra.
-    extra = (3.0 if int(tex_resolution) >= 768 else 0.0) + max(0, int(max_num_view) - 6) * 0.6
+    extra = (8.0 if int(tex_resolution) >= 768 else 0.0) + max(0, int(max_num_view) - 6) * 0.6
 
     chosen = None
     for i in range(ceiling_i, -1, -1):
