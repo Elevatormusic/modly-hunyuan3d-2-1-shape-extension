@@ -68,6 +68,7 @@ A prompt like *"product render on a white background, 3/4 view, soft even lighti
 - **PBR texture pass** — albedo + packed metallic-roughness, painted from 6–9 camera views.
 - **Seam-fix** — reconciles color jumps across UV-island edges so textures don't show hard seams (on by default).
 - **Mesh cleanup** — Regular / Isotropic / BPT neural retopology, with automatic fallbacks.
+- **Normal-map bake** — optional: bakes fine detail from the full-resolution mesh onto the clean base, with glTF tangents shipped in the file so it renders correctly in any viewer.
 - **CAD / print friendly** — optional decimation produces a mesh that converts cleanly downstream (e.g. Fusion 360's Convert Mesh, or a mesh-to-STEP tool).
 - **QA sheet** — an optional one-image diagnostic of every texture map (see the deep dive below).
 
