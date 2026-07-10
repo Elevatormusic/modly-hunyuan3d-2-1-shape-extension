@@ -1402,10 +1402,18 @@ class Hunyuan3DShapeV21Generator(BaseGenerator):
                     pass
             if installed_wheel:
                 try:
-                    subprocess.run(
+                    _r = subprocess.run(
                         [sys.executable, "-m", "pip", "uninstall", "-y",
                          "custom_rasterizer"],
                         capture_output=True, text=True)
+                    if _r.returncode != 0:
+                        # A failed uninstall leaves a wheel we couldn't verify
+                        # importable, which would make the source build skip
+                        # itself. Loud is the only defense here.
+                        print(f"[{self.MODEL_ID}] WARNING: prebuilt rollback "
+                              f"uninstall failed (rc={_r.returncode}) — the "
+                              "installed custom_rasterizer wheel may mask the "
+                              f"source build:\n{_r.stderr[-500:]}")
                 except Exception:
                     pass
             # Leave sys.modules pristine so the fallback re-imports cleanly.
