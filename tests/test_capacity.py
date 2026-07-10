@@ -1,3 +1,4 @@
+import re
 import unittest
 import capacity
 
@@ -17,6 +18,7 @@ class TestShouldBake(unittest.TestCase):
 
 class TestVramPlan(unittest.TestCase):
     def test_plenty_of_vram_no_change(self):
+        # 23 GB free: shape 512 needs ~14, full-GPU textures ~20.4 -> both fit, no warning.
         octree, warn = capacity.vram_plan(23, 24, True, 512, 512, 6)
         self.assertEqual(octree, 512)
         self.assertIsNone(warn)
@@ -33,12 +35,22 @@ class TestVramPlan(unittest.TestCase):
         octree, warn = capacity.vram_plan(11, 12, False, 512, 512, 6)
         self.assertEqual(octree, 384)
 
-    def test_texture_warning_when_tight(self):
-        # 15 GB free, textures need ~22 -> warn (but octree 256 shape fits, no cap)
+    def test_texture_warning_reassures_when_reduced_fits(self):
+        # 15 GB free: full-GPU textures need ~20 (too big) but the reduced-VRAM path
+        # (~13) fits -> reassure that Auto will use it rather than scaring the user.
         octree, warn = capacity.vram_plan(15, 24, True, 256, 512, 6)
         self.assertEqual(octree, 256)
         self.assertIsNotNone(warn)
         self.assertIn("Textures need", warn)
+        self.assertIn("reduced-VRAM path", warn)
+
+    def test_texture_warning_scary_when_even_reduced_wont_fit(self):
+        # 10 GB free: neither full-GPU (~20) nor reduced (~13) fits -> honest OOM advice.
+        octree, warn = capacity.vram_plan(10, 24, True, 256, 512, 6)
+        self.assertEqual(octree, 256)
+        self.assertIsNotNone(warn)
+        self.assertIn("Textures need", warn)
+        self.assertIn("out-of-memory", warn)
 
     def test_no_texture_no_texture_warning(self):
         octree, warn = capacity.vram_plan(15, 24, False, 256, 512, 6)
@@ -47,92 +59,139 @@ class TestVramPlan(unittest.TestCase):
     def test_paint_vram_scales_up(self):
         self.assertGreater(capacity.paint_vram(768, 9), capacity.paint_vram(512, 6))
 
+    def test_paint_vram_is_measured_stock_peak(self):
+        # 512/6v full-GPU peak is the measured 20.4 GB reserved.
+        self.assertAlmostEqual(capacity.paint_vram(512, 6), 20.4, places=3)
 
-class TestPlanTextureMemory(unittest.TestCase):
-    def test_empty_card_picks_ceiling_high(self):
-        # 24 GB free, ceiling High: High peak 13.5 + margin 6 = 19.5 <= 24 -> High,
-        # which is the stock (render 2048 / texture 4096) tier. Fits pure VRAM -> no warning.
-        p = capacity.plan_texture_memory(24, "high")
-        self.assertEqual(p.tier, "high")
-        self.assertEqual((p.render_size, p.texture_size, p.sr_chunk), (2048, 4096, 4))
+
+class TestTierResolution(unittest.TestCase):
+    def test_legacy_ids_map_forward(self):
+        # balanced|high|max -> auto; low -> reduced; unknown -> auto.
+        self.assertEqual(capacity.plan_texture_memory(24, "balanced").tier, "standard")
+        self.assertEqual(capacity.plan_texture_memory(24, "high").tier, "standard")
+        self.assertEqual(capacity.plan_texture_memory(24, "max").tier, "standard")
+        low = capacity.plan_texture_memory(24, "low")
+        self.assertEqual(low.tier, "reduced")
+        self.assertTrue(low.offload)
+
+    def test_unknown_ceiling_treated_as_auto(self):
+        # nonsense -> auto -> on a 24 GB card auto resolves to standard.
+        p = capacity.plan_texture_memory(24, "nonsense")
+        self.assertEqual(p.tier, "standard")
+        self.assertFalse(p.offload)
+
+    def test_all_tiers_use_stock_sizes(self):
+        for tier in ("auto", "standard", "reduced"):
+            p = capacity.plan_texture_memory(24, tier)
+            self.assertEqual((p.render_size, p.texture_size, p.sr_chunk), (2048, 4096, 4))
+
+
+class TestAutoTier(unittest.TestCase):
+    def test_auto_picks_standard_when_it_fits(self):
+        # 24 GB free >= need_standard (~21.9) -> full-GPU standard, offload off, no warning.
+        p = capacity.plan_texture_memory(24, "auto")
+        self.assertEqual(p.tier, "standard")
+        self.assertFalse(p.offload)
         self.assertIsNone(p.warning)
 
-    def test_ceiling_clamps_below_band(self):
-        # 24 GB free would allow High, but the user's ceiling is Low.
-        p = capacity.plan_texture_memory(24, "low")
-        self.assertEqual(p.tier, "low")
-        self.assertEqual((p.render_size, p.texture_size, p.sr_chunk), (1536, 2048, 2))
+    def test_auto_picks_reduced_when_tight_but_fits_reduced(self):
+        # 16 GB free < need_standard -> reduced (offload on); reduced peak ~13 <= 16 -> no warning.
+        p = capacity.plan_texture_memory(16, "auto")
+        self.assertEqual(p.tier, "reduced")
+        self.assertTrue(p.offload)
+        self.assertIsNone(p.warning)
 
-    def test_ceiling_gated_when_tight_falls_to_low(self):
-        # The upper tiers (balanced/high/max) now share peak 13.5 -> threshold 13.5+6=19.5;
-        # Low's threshold is 12.5+6=18.5. At 19 GB free the Balanced ceiling can't fit
-        # (19.5 > 19) so the planner gates DOWN to Low (18.5 <= 19), the reduced fallback tier.
-        p = capacity.plan_texture_memory(19, "balanced")
-        self.assertEqual(p.tier, "low")
-        self.assertEqual((p.render_size, p.texture_size, p.sr_chunk), (1536, 2048, 2))
+    def test_auto_reduced_default_ceiling(self):
+        # Default tier_ceiling is auto.
+        p = capacity.plan_texture_memory(16)
+        self.assertEqual(p.tier, "reduced")
+        self.assertTrue(p.offload)
 
+    def test_monotonic_more_vram_never_offloads_more(self):
+        # More VRAM must never force MORE offloading (never step from standard back to reduced).
+        lo = capacity.plan_texture_memory(18, "auto")
+        hi = capacity.plan_texture_memory(24, "auto")
+        self.assertFalse(hi.offload and not lo.offload)   # more VRAM -> not worse
+        self.assertGreaterEqual(hi.render_size, lo.render_size)
+
+
+class TestForcedTiers(unittest.TestCase):
+    def test_forced_standard_respected(self):
+        p = capacity.plan_texture_memory(24, "standard")
+        self.assertEqual(p.tier, "standard")
+        self.assertFalse(p.offload)
+
+    def test_forced_reduced_respected_at_stock_sizes(self):
+        p = capacity.plan_texture_memory(24, "reduced")
+        self.assertEqual(p.tier, "reduced")
+        self.assertTrue(p.offload)
+        self.assertEqual((p.render_size, p.texture_size, p.sr_chunk), (2048, 4096, 4))
+
+    def test_forced_standard_warns_honestly_when_over_budget(self):
+        # 16 GB free, forced standard (~20.4 peak) -> exceeds budget -> hint + honest need.
+        p = capacity.plan_texture_memory(16, "standard")
+        self.assertEqual(p.tier, "standard")
+        self.assertTrue(p.offload_hint)
+        self.assertIsNotNone(p.warning)
+        need = int(re.search(r"need ~(\d+) GB", p.warning).group(1))
+        # printed need = peak(20.4)+margin(1.5) = ~22 -> honestly exceeds the 16 GB budget.
+        self.assertGreaterEqual(need, 21)
+        self.assertGreater(need, 16)
+
+
+class TestBelowFloor(unittest.TestCase):
     def test_below_floor_warns_and_hints_offload(self):
-        p = capacity.plan_texture_memory(17, "balanced")
-        self.assertEqual(p.tier, "low")           # best effort
+        # 10 GB free: even the reduced path (~13 peak) can't fit -> best effort + hint.
+        p = capacity.plan_texture_memory(10, "auto")
+        self.assertEqual(p.tier, "reduced")          # best effort
+        self.assertTrue(p.offload)
         self.assertTrue(p.offload_hint)
         self.assertIsNotNone(p.warning)
         self.assertIn("available", p.warning)
 
     def test_floor_warning_need_includes_margin(self):
-        # Fix 8: the fit test uses peak+extra+MARGIN, so the printed 'need' must
-        # include the margin too. Without it, the message read "need ~13 GB but
-        # only ~17 GB available" — a false statement (it actually did NOT fit).
-        import re
-        p = capacity.plan_texture_memory(17, "balanced")
+        # The fit test uses peak+MARGIN, so the printed 'need' must include the margin too.
+        p = capacity.plan_texture_memory(10, "auto")
         self.assertIsNotNone(p.warning)
         need = int(re.search(r"need ~(\d+) GB", p.warning).group(1))
-        # _TEX_PEAK['low'] (12.5) + margin (6.0) = 18.5 -> >= budget (17), i.e. honest.
-        self.assertGreaterEqual(need, 18)
-        self.assertGreaterEqual(need, int(round(17)))
-
-    def test_monotonic_more_vram_never_smaller(self):
-        lo = capacity.plan_texture_memory(20, "high")
-        hi = capacity.plan_texture_memory(24, "high")
-        self.assertGreaterEqual(hi.render_size, lo.render_size)
-        self.assertGreaterEqual(hi.texture_size, lo.texture_size)
-
-    def test_unknown_ceiling_treated_as_balanced(self):
-        p = capacity.plan_texture_memory(24, "nonsense")
-        self.assertEqual(p.tier, "balanced")
+        # reduced peak (13.0) + margin (1.5) = 14.5 -> rounds to 14; margin bumps it above
+        # the bare peak (13) and above the budget (10), i.e. the advice is honest.
+        self.assertGreaterEqual(need, 14)
+        self.assertGreater(need, 10)
 
     def test_unreadable_free_is_conservative(self):
+        # None free -> budget 0 -> reduced best-effort with the offload hint.
         p = capacity.plan_texture_memory(None, "high")
-        self.assertEqual(p.tier, "low")
+        self.assertEqual(p.tier, "reduced")
+        self.assertTrue(p.offload)
         self.assertTrue(p.offload_hint)
 
+
+class TestHiResDemand(unittest.TestCase):
     def test_hi_res_diffusion_costs_more(self):
-        # texture_resolution=768 adds demand -> tighter fit than 512 at same free VRAM.
-        p512 = capacity.plan_texture_memory(22, "high", tex_resolution=512)
-        p768 = capacity.plan_texture_memory(22, "high", tex_resolution=768)
-        order = {"low": 0, "balanced": 1, "high": 2}
+        # tex_res 768 adds ~14 GB -> at 22 GB free, 512 -> standard, 768 -> reduced (tighter).
+        p512 = capacity.plan_texture_memory(22, "auto", tex_resolution=512)
+        p768 = capacity.plan_texture_memory(22, "auto", tex_resolution=768)
+        order = {"reduced": 0, "standard": 1}
         self.assertLessEqual(order[p768.tier], order[p512.tier])
+
+    def test_768_gates_to_shared_ram_advice(self):
+        # 768 + staging (~27 GB) exceeds any consumer card -> shared-RAM advice.
+        p = capacity.plan_texture_memory(22, "reduced", tex_resolution=768)
+        self.assertIsNotNone(p.warning)
+        self.assertIn("shared GPU memory", p.warning)
 
 
 class TestApplyTexturePlan(unittest.TestCase):
     def test_sets_conf_fields(self):
-        plan = capacity.TexturePlan(1024, 2048, 2, "balanced", False, None)
+        plan = capacity.TexturePlan(2048, 4096, 4, "standard", False, False, None)
         class _Conf: pass
         c = _Conf()
         capacity.apply_texture_plan(c, plan)
-        self.assertEqual((c.render_size, c.texture_size, c.sr_chunk), (1024, 2048, 2))
+        self.assertEqual((c.render_size, c.texture_size, c.sr_chunk), (2048, 4096, 4))
 
-
-class TestMaxTier(unittest.TestCase):
-    def test_max_reachable_via_ceiling(self):
-        # 24 GB free, ceiling Max: Max peak 13.5 + margin 6 = 19.5 <= 24 -> Max,
-        # the stock tier (render 2048 / texture 4096).
-        p = capacity.plan_texture_memory(24, "max")
-        self.assertEqual(p.tier, "max")
-        self.assertEqual((p.render_size, p.texture_size, p.sr_chunk), (2048, 4096, 4))
-
-    def test_ceiling_high_never_gives_max(self):
-        p = capacity.plan_texture_memory(24, "high")
-        self.assertEqual(p.tier, "high")
+    def test_plan_has_offload_field(self):
+        self.assertIn("offload", capacity.TexturePlan._fields)
 
 
 class TestSharedRamAllowance(unittest.TestCase):
@@ -153,28 +212,27 @@ class TestSharedRamAllowance(unittest.TestCase):
 
 
 class TestExtraBudget(unittest.TestCase):
-    def test_extra_budget_makes_max_reachable(self):
-        # 10 GB free VRAM alone can't fit Max, but +20 GB shared can.
-        p = capacity.plan_texture_memory(10, "max", extra_budget_gb=20)
-        self.assertEqual(p.tier, "max")
+    def test_extra_budget_makes_standard_reachable(self):
+        # 10 GB free VRAM alone can't fit standard, but +20 GB shared can -> pages.
+        p = capacity.plan_texture_memory(10, "standard", extra_budget_gb=20)
+        self.assertEqual(p.tier, "standard")
         self.assertIsNotNone(p.warning)
         self.assertIn("page", p.warning.lower())
 
     def test_no_paging_warning_when_fits_pure_vram(self):
-        p = capacity.plan_texture_memory(24, "max")   # fits in real VRAM
-        self.assertEqual(p.tier, "max")
+        p = capacity.plan_texture_memory(24, "standard")   # fits in real VRAM
+        self.assertEqual(p.tier, "standard")
         self.assertIsNone(p.warning)
 
     def test_extra_budget_zero_is_unchanged(self):
-        a = capacity.plan_texture_memory(22, "high")
-        b = capacity.plan_texture_memory(22, "high", extra_budget_gb=0.0)
+        a = capacity.plan_texture_memory(22, "auto")
+        b = capacity.plan_texture_memory(22, "auto", extra_budget_gb=0.0)
         self.assertEqual(a, b)
 
     def test_toggle_off_never_pages(self):
-        # 22 GB free, no extra budget: High fits its budget (13.5+6=19.5 <= 22) and its
-        # peak 13.5 <= 22 free VRAM, so it runs entirely in real VRAM -> no paging warning.
-        p = capacity.plan_texture_memory(22, "high")
-        self.assertEqual(p.tier, "high")
+        # 22 GB free, no extra budget: standard fits (21.9 <= 22) and peak 20.4 <= 22 -> no paging.
+        p = capacity.plan_texture_memory(22, "auto")
+        self.assertEqual(p.tier, "standard")
         self.assertIsNone(p.warning)
 
 
