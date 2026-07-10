@@ -102,6 +102,119 @@ class TestApplyToGlb(unittest.TestCase):
             self.assertIsNotNone(g.visual.material.baseColorTexture)
             self.assertIsNotNone(g.visual.material.metallicRoughnessTexture)
 
+    def test_apply_keeps_jpeg_albedo_jpeg(self):
+        # C3: after seam-fix, a JPEG-sourced albedo must stay JPEG in the rebuilt
+        # GLB. Image.fromarray(...) has format=None -> trimesh would re-encode PNG
+        # (~10x bloat). The fix preserves the source format.
+        import os, tempfile, numpy as np, trimesh, seam_fix
+        from PIL import Image
+        from tests._fixtures import unit_uv_quad
+        with tempfile.TemporaryDirectory() as d:
+            verts, faces, uv = unit_uv_quad()
+            m = trimesh.Trimesh(verts, faces, process=False)
+            img = Image.fromarray(np.random.randint(0, 255, (128, 128, 3), np.uint8))
+            img.format = "JPEG"
+            mat = trimesh.visual.material.PBRMaterial(baseColorTexture=img)
+            m.visual = trimesh.visual.TextureVisuals(uv=uv, material=mat)
+            glb = os.path.join(d, "j.glb")
+            m.export(glb)
+            # sanity: source really embedded as jpeg
+            self.assertIn(b"image/jpeg", open(glb, "rb").read())
+            seam_fix.apply_to_glb(glb)
+            raw = open(glb, "rb").read()
+            self.assertIn(b"image/jpeg", raw)          # still jpeg
+            self.assertNotIn(b"image/png", raw)        # not re-encoded to png
+            g = list(trimesh.load(glb, process=False).geometry.values())[0]
+            self.assertEqual((g.visual.material.baseColorTexture.format or "").upper(),
+                             "JPEG")
+
+
+class TestReviewFixes(unittest.TestCase):
+    def test_twin_packed_toward_interior_not_worsened(self):
+        # C-IMPORTANT-1: when xatlas packs the twin toward chart A's interior, the
+        # old twin-based inward direction sampled A's EXTERIOR and drove the seam
+        # texel the wrong way. The interior direction must come from A's own third
+        # (opposite) vertex. Seam on the u=0.5 boundary, A interior to the RIGHT,
+        # twin packed to the right (toward A's interior).
+        atlas = np.empty((64, 64, 3), np.uint8)
+        atlas[:, :32] = 200      # A exterior (u<0.5)
+        atlas[:, 32:] = 100      # A interior (u>0.5); B is packed inside here too
+        vertices = np.array([[0, 0, 0], [0, 1, 0], [1, 0, 0],
+                             [0, 0, 0], [0, 1, 0], [2, 0, 0]], float)
+        faces = np.array([[0, 1, 2], [3, 4, 5]], int)
+        uvs = np.array([[0.5, 0.2], [0.5, 0.8], [0.9, 0.5],   # A: seam u=0.5, third RIGHT
+                        [0.6, 0.2], [0.6, 0.8], [0.7, 0.5]],   # B: packed right of A's seam
+                       float)
+        seams = seam_fix._find_seam_edges(vertices, faces, uvs)
+        self.assertEqual(len(seams), 1)
+        out = seam_fix._reconcile(atlas.copy(), faces, uvs, seams, 4)
+        # A's seam texels (col 32, interior=100) must stay ~100, not be dragged
+        # toward the 200 exterior the old code sampled (it drove them to ~50).
+        self.assertGreater(out[20:45, 32, 0].mean(), 90)
+
+    def test_reconcile_skips_nonfinite_seam(self):
+        # C-9: a NaN/inf UV must skip just that seam, not abort the whole stage.
+        atlas = np.full((16, 16, 3), 100, np.uint8)
+        seams = [(np.array([np.nan, 0.5]), np.array([0.5, 0.9]),
+                  np.array([0.51, 0.1]), np.array([0.51, 0.9]))]
+        out = seam_fix._reconcile(atlas.copy(), np.zeros((0, 3), int),
+                                  np.zeros((0, 2), float), seams, 4)
+        np.testing.assert_array_equal(out, atlas)   # unchanged, no raise
+
+    def test_reconcile_skips_nonfinite_third_vertex(self):
+        # C-9 follow-up: a NaN THIRD-vertex UV (endpoints finite) must skip just
+        # that seam — the third vertex feeds _inward_perp/_sample, so an unguarded
+        # NaN there raised ValueError and aborted the whole reconcile stage.
+        atlas = np.full((16, 16, 3), 100, np.uint8)
+        faces = np.array([[0, 1, 2], [3, 4, 5]], int)
+        uvs = np.array([[0.5, 0.2], [0.5, 0.8], [np.nan, np.nan],   # A: third = NaN
+                        [0.51, 0.2], [0.51, 0.8], [0.7, 0.5]],       # B: third finite
+                       float)
+        seams = [(uvs[0], uvs[1], uvs[3], uvs[4])]
+        out = seam_fix._reconcile(atlas.copy(), faces, uvs, seams, 4)
+        np.testing.assert_array_equal(out, atlas)   # skipped, unchanged, no raise
+
+    def test_spray_touches_contiguous_columns(self):
+        # C-9: integer round() (banker's) skipped columns (a seam at x=3.5 stepping
+        # inward hit 4,4,6 -> col 5 lost). Round-half-up hits every column.
+        corr = np.zeros((8, 8, 1), np.float64)
+        wsum = np.zeros((8, 8), np.float64)
+        seam_fix._spray(corr, wsum, np.array([3.5, 4.0]),
+                        np.array([1.0, 0.0]), 3, np.array([10.0]))
+        touched = sorted(int(x) for x in np.where(wsum[4] > 0)[0])
+        self.assertEqual(touched, [4, 5, 6])   # contiguous, no skipped column
+
+    def test_seam_samples_use_longer_side(self):
+        # C-9: the along-seam sample count must come from the LONGER side so the
+        # denser twin is covered without holes (old code used side A only).
+        n = seam_fix._seam_samples(np.array([0.0, 0.0]), np.array([3.0, 0.0]),
+                                   np.array([0.0, 0.0]), np.array([40.0, 0.0]))
+        self.assertGreaterEqual(n, 41)
+
+    def test_feather_band_clamped_per_seam(self):
+        # C-IMPORTANT-2: the band clamps from EACH seam's own edge length; a tiny
+        # 2px seam must not collapse a long 200px seam's band across the atlas.
+        base = seam_fix._local_band(4096)
+        self.assertEqual(base, 9)
+        self.assertEqual(seam_fix._seam_band(base, 200), base)   # long keeps base
+        self.assertEqual(seam_fix._seam_band(base, 2), 1)        # tiny clamps to 1
+
+    def test_coverage_mask_no_matplotlib(self):
+        # C-IMPORTANT-4: matplotlib is not a declared dependency; the point-in-poly
+        # test must be pure-numpy barycentric with no matplotlib import.
+        import inspect
+        self.assertNotIn("matplotlib", inspect.getsource(seam_fix))
+
+    def test_coverage_mask_barycentric_correct(self):
+        # right triangle corners (0,0),(15,0),(0,15) in px (x,y) space
+        faces = np.array([[0, 1, 2]], int)
+        uvs = np.array([[0.0, 1.0], [1.0, 1.0], [0.0, 0.0]], float)
+        mask = seam_fix._coverage_mask(uvs, faces, 16, 16)
+        self.assertTrue(mask[3, 3])         # interior (y,x)
+        self.assertFalse(mask[14, 14])      # past the hypotenuse
+        self.assertGreater(mask.sum(), 90)  # ~half of 256
+        self.assertLess(mask.sum(), 170)
+
 
 if __name__ == "__main__":
     unittest.main()

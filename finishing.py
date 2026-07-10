@@ -7,8 +7,18 @@ Branch 3 (export/optimize stages + Khronos validate gate).
 """
 
 
+def _log(msg):
+    """Guarded stderr/stdout log. A bare print() can itself raise
+    (UnicodeEncodeError on a legacy Windows codepage, OSError on a closed pipe);
+    swallowing that here keeps finish()'s never-raise contract (Fix 7)."""
+    try:
+        print(msg)
+    except Exception:
+        pass
+
+
 def finish(glb_path, obj_path, *, dense_mesh, texture_size, mesh_mode,
-           bake_normal_map=False, seam_fix=True, debug_sheet=True,
+           bake_normal_map=False, seam_fix=True, debug_sheet=False,
            input_image_path=None, report=None):
     def _report(pct, label):
         if report:
@@ -28,7 +38,7 @@ def finish(glb_path, obj_path, *, dense_mesh, texture_size, mesh_mode,
             rep["seam_fix"] = "ok"
         except Exception as exc:
             rep["seam_fix"] = f"skipped ({exc})"
-            print(f"[finishing] seam fix skipped ({exc})")
+            _log(f"[finishing] seam fix skipped ({exc})")
 
     # 2. normal bake (default OFF), same gate + BPT skip as the old inline tail
     try:
@@ -37,18 +47,22 @@ def finish(glb_path, obj_path, *, dense_mesh, texture_size, mesh_mode,
             try:
                 import normal_bake
                 _report(95, "Baking normal map...")
-                normal_bake.bake_normal_map(dense_mesh, glb_path, size=texture_size)
-                rep["bake"] = "ok"
+                # bake_normal_map returns False on internal failure (leaves the
+                # GLB unchanged) — honour it rather than reporting "ok" (Fix 6).
+                ok = normal_bake.bake_normal_map(dense_mesh, glb_path, size=texture_size)
+                rep["bake"] = "ok" if ok else "failed"
+                if not ok:
+                    _log("[finishing] normal bake failed; shipping without a normal map")
             except Exception as exc:
                 rep["bake"] = f"skipped ({exc})"
-                print(f"[finishing] normal bake skipped ({exc})")
+                _log(f"[finishing] normal bake skipped ({exc})")
         elif bake_normal_map and mesh_mode == "bpt":
             rep["bake"] = "bpt-skip"
-            print("[finishing] BPT mesh: skipping normal bake "
-                  "(regenerated surface would misregister the bake)")
+            _log("[finishing] BPT mesh: skipping normal bake "
+                 "(regenerated surface would misregister the bake)")
     except Exception as exc:
         rep["bake"] = f"skipped ({exc})"
-        print(f"[finishing] bake gate skipped ({exc})")
+        _log(f"[finishing] bake gate skipped ({exc})")
 
     # 3. structural validation (logged, non-fatal)
     try:
@@ -56,10 +70,10 @@ def finish(glb_path, obj_path, *, dense_mesh, texture_size, mesh_mode,
         v = glb_validate.validate_glb(glb_path)
         rep["validate"] = "ok" if v.get("ok") else "warn"
         if not v.get("ok"):
-            print(f"[finishing] validation warnings: {v.get('warnings')}")
+            _log(f"[finishing] validation warnings: {v.get('warnings')}")
     except Exception as exc:
         rep["validate"] = f"skipped ({exc})"
-        print(f"[finishing] validation skipped ({exc})")
+        _log(f"[finishing] validation skipped ({exc})")
 
     # 4. QA debug sheet (side output)
     if debug_sheet:
@@ -72,6 +86,6 @@ def finish(glb_path, obj_path, *, dense_mesh, texture_size, mesh_mode,
             rep["debug_sheet"] = "ok" if res else "skipped"
         except Exception as exc:
             rep["debug_sheet"] = f"skipped ({exc})"
-            print(f"[finishing] debug sheet skipped ({exc})")
+            _log(f"[finishing] debug sheet skipped ({exc})")
 
     return rep

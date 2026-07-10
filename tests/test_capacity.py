@@ -78,6 +78,18 @@ class TestPlanTextureMemory(unittest.TestCase):
         self.assertIsNotNone(p.warning)
         self.assertIn("available", p.warning)
 
+    def test_floor_warning_need_includes_margin(self):
+        # Fix 8: the fit test uses peak+extra+MARGIN, so the printed 'need' must
+        # include the margin too. Without it, the message read "need ~13 GB but
+        # only ~17 GB available" — a false statement (it actually did NOT fit).
+        import re
+        p = capacity.plan_texture_memory(17, "balanced")
+        self.assertIsNotNone(p.warning)
+        need = int(re.search(r"need ~(\d+) GB", p.warning).group(1))
+        # _TEX_PEAK['low'] (12.5) + margin (6.0) = 18.5 -> >= budget (17), i.e. honest.
+        self.assertGreaterEqual(need, 18)
+        self.assertGreaterEqual(need, int(round(17)))
+
     def test_monotonic_more_vram_never_smaller(self):
         lo = capacity.plan_texture_memory(20, "high")
         hi = capacity.plan_texture_memory(24, "high")

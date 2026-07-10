@@ -99,7 +99,10 @@ def plan_texture_memory(free_gb, tier_ceiling="balanced",
     if chosen is None:              # even Low won't fit the budget — best effort + warn
         chosen = "low"
         offload_hint = True
-        need = _TEX_PEAK["low"] + extra
+        # include _TEX_MARGIN so the printed 'need' matches the fit test above
+        # (peak+extra+margin); otherwise it reads "need ~13 but ~15 available",
+        # a false statement on ~16 GB cards (Fix 8).
+        need = _TEX_PEAK["low"] + extra + _TEX_MARGIN
         warning = (f"Textures need ~{need:.0f} GB but only ~{budget:.0f} GB is available — "
                    f"close other GPU apps, turn on Use shared GPU memory, or turn textures "
                    f"off to avoid a slowdown or out-of-memory error.")

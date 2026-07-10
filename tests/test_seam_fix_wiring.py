@@ -36,6 +36,16 @@ class TestWiring(unittest.TestCase):
         self.assertIn("seam_fix", mparams)
         self.assertEqual(mparams["seam_fix"]["default"], 1)
 
+    def test_paint_tmpdir_is_cleaned_up(self):
+        # Fix 10: the tempfile.mkdtemp() paint scratch dir (~15-25 MB/gen) must be
+        # removed after finishing.finish() returns, in the _run_texture finally.
+        src = (self._repo() / "generator.py").read_text(encoding="utf-8")
+        rt = src[src.index("def _run_texture"):src.index("def _ensure_hy3dpaint")]
+        self.assertIn("tmp_dir = Path(tempfile.mkdtemp())", rt)
+        self.assertIn("shutil.rmtree(tmp_dir", rt)   # cleanup wired
+        # the cleanup must live in the finally (after finishing.finish reads tmp_dir)
+        self.assertGreater(rt.index("shutil.rmtree(tmp_dir"), rt.index("finishing.finish"))
+
 
 if __name__ == "__main__":
     unittest.main()

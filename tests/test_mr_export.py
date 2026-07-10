@@ -14,6 +14,17 @@ class TestMRExport(unittest.TestCase):
         self.assertTrue((out[..., 1] == 200).all())    # G = roughness
         self.assertTrue((out[..., 2] == 50).all())      # B = metallic
 
+    def test_pack_resizes_mismatched_dims(self):
+        # Fix 11: mismatched metallic/roughness sizes must be resized to a common
+        # size, not raise (a raise made build_glb_with_mr fall back to albedo-only,
+        # silently dropping BOTH maps).
+        m = Image.fromarray(np.full((8, 8), 50, np.uint8))
+        r = Image.fromarray(np.full((16, 16), 200, np.uint8))
+        out = np.asarray(mr_export.pack_metallic_roughness(m, r))   # must not raise
+        self.assertEqual(out.shape[:2], (16, 16))       # resized up to the larger
+        self.assertTrue((out[..., 1] == 200).all())      # roughness preserved
+        self.assertTrue((out[..., 2] == 50).all())       # metallic upsized (uniform)
+
     def _write_obj(self, d):
         base = os.path.join(d, "textured")
         Image.fromarray(np.full((8,8,3),128,np.uint8)).save(base+".png")
