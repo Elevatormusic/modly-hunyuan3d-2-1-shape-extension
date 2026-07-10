@@ -63,9 +63,11 @@ class TestEncode(unittest.TestCase):
         size = 8
         low_nrm = np.tile([0, 0, 1.0], (size, size, 1)).astype(np.float32)
         world_nrm = low_nrm.copy()
+        tex_T = np.tile([1.0, 0, 0], (size, size, 1))
+        tex_w = np.ones((size, size))
         mask = np.zeros((size, size), bool)
         mask[2:5, 2:5] = True  # only the center is covered
-        rgb = normal_bake.encode_tangent_space(low_nrm, world_nrm, mask)
+        rgb = normal_bake.encode_tangent_space(world_nrm, mask, tex_T, tex_w, low_nrm)
         # uncovered MUST be neutral (128,128,255), never black (0,0,0)
         self.assertTrue((rgb[~mask] == [128, 128, 255]).all())
         self.assertFalse((rgb[~mask] == [0, 0, 0]).all())

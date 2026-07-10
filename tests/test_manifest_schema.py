@@ -44,9 +44,9 @@ class TestManifestSchemaLockstep(unittest.TestCase):
         from generator import Hunyuan3DShapeV21Generator as G
         return {p["id"]: p for p in G.params_schema()}
 
-    def test_version_1_7_0(self):
+    def test_version_1_7_1(self):
         man, _ = self._manifest()
-        self.assertEqual(man["version"], "1.7.0")
+        self.assertEqual(man["version"], "1.7.1")
 
     def test_texture_memory_default_auto_both_sides(self):
         _, mp = self._manifest()
@@ -74,6 +74,16 @@ class TestManifestSchemaLockstep(unittest.TestCase):
         sp = self._schema()
         self.assertEqual(mp["bake_normal_map"]["default"], 0)
         self.assertEqual(sp["bake_normal_map"]["default"], 0)
+
+    def test_bake_tooltip_and_labels_lockstep(self):
+        _, mp = self._manifest()
+        sp = self._schema()
+        self.assertEqual(mp["bake_normal_map"]["tooltip"],
+                         sp["bake_normal_map"]["tooltip"])
+        mlabels = {o["value"]: o["label"] for o in mp["bake_normal_map"]["options"]}
+        slabels = {o["value"]: o["label"] for o in sp["bake_normal_map"]["options"]}
+        self.assertEqual(mlabels, slabels)
+        self.assertEqual(mlabels[0], "No (default)")
 
     def test_debug_sheet_present_and_lockstep(self):
         _, mp = self._manifest()
