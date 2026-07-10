@@ -115,9 +115,6 @@ def harmonize_views(textures, cos_maps, anchor=0, lam=RIDGE_LAMBDA, cap=SAMPLE_C
                     n_pairs_used += 1
                     # residual r = (a_i I_i + b_i) - (a_j I_j + b_j); anchor: a=1, b=0
                     # accumulate normal equations for x = [a_o..., b_o...]
-                    def _acc(vi, Iv, sign):
-                        """add sign * (coefficients of view vi) into row structures"""
-                        return (col[vi], sign)
                     # build per-sample coefficient triples: (column, coeff)
                     cols_i = None if i == anchor else col[i]
                     cols_j = None if j == anchor else col[j]

@@ -1,4 +1,6 @@
 # tests/test_bake_blend.py
+import contextlib
+import io
 import unittest
 import numpy as np
 import torch
@@ -115,13 +117,38 @@ class TestHarmonize(unittest.TestCase):
         self.assertLess(after, before / 5.0)                      # >=5x agreement
         self.assertTrue(torch.equal(out[0], t[0]))                # anchor untouched
 
+    def _thin_overlap_views(self, h=96, w=96, a1=1.06, b1=-0.02, ov_cols=4):
+        # A REAL thin overlap: left block [0,split), right block [split-ov_cols, w).
+        # ov_cols=4 -> 4*96 = 384 overlap texels: passes the >=32 gate, ~4% of the
+        # 9216-texel image, and modest injected distortion (gain 1.06, offset -0.02).
+        base = _gradient(h, w)
+        t0 = torch.clamp(base, 0, 1)
+        t1 = torch.clamp(base * a1 + b1, 0, 1)
+        split = w // 2
+        c0 = torch.zeros(h, w, 1); c0[:, :split, 0] = 1.0
+        c1 = torch.zeros(h, w, 1); c1[:, split - ov_cols:, 0] = 1.0
+        return [t0, t1], [c0, c1]
+
     def test_thin_overlap_stays_near_identity(self):
-        (t, c, _) = self._views()
-        c[1][:, : 2 * 96 // 3, 0] = 0.0                           # overlap -> 0 columns... shrink:
-        c[1][:, :, 0] = 0.0
-        c[1][:, 2 * 96 // 3:, 0] = 1.0                            # right third only: NO overlap
+        (t, c) = self._thin_overlap_views()
+        overlap = int(((c[0][..., 0] > 0) & (c[1][..., 0] > 0)).sum())
+        self.assertGreaterEqual(overlap, 32)                      # gate not skipping the pair
+        self.assertLess(overlap, 96 * 96 // 10)                   # genuinely thin (<10% of image)
         out = bb.harmonize_views(t, c, anchor=0)
-        self.assertLess(float((out[1] - t[1]).abs().max()), 0.02) # ridge -> ~identity
+        delta = float((out[1] - t[1]).abs().max())
+        # non-vacuous: the ridge path actually ran (a skipped pair leaves out[1]==t[1]
+        # exactly, delta==0). Empirically delta==0.0107 at these params.
+        self.assertGreater(delta, 1e-4)                           # correction is real, not skipped
+        self.assertLess(delta, 0.03)                              # yet ridge keeps it near identity
+        self.assertTrue(torch.equal(out[0], t[0]))                # anchor untouched
+
+    def test_identical_calls_are_bit_identical(self):
+        (t, c, _) = self._views()
+        out_a = bb.harmonize_views(t, c, anchor=0)
+        out_b = bb.harmonize_views(t, c, anchor=0)
+        self.assertFalse(torch.equal(out_a[1], t[1]))             # non-vacuous: a real correction
+        for xa, xb in zip(out_a, out_b):
+            self.assertTrue(torch.equal(xa, xb))                  # deterministic to the bit
 
     def test_clamps_hold_on_adversarial_input(self):
         (t, c, _) = self._views(a=(1.0, 5.0), b=(0.0, 0.4))       # wild injected distortion
@@ -132,10 +159,30 @@ class TestHarmonize(unittest.TestCase):
         self.assertLessEqual(float(ratio.max()), 2.6)             # 2.0 gain + offset slack
 
     def test_failure_returns_inputs(self):
-        t = [torch.zeros(4, 4, 3)]
-        c = [torch.zeros(4, 4, 1)]                                # no overlap possible (V=1)
-        out = bb.harmonize_views(t, c, anchor=0)
-        self.assertTrue(torch.equal(out[0], t[0]))
+        # Force the internal solve to raise on V=2 REAL overlapping views so the
+        # try/except recovery path (not the V<2 early return) is exercised, and
+        # assert the original tensors come back untouched with no exception escaping.
+        (t, c, _) = self._views()
+        t_ref = [x.clone() for x in t]
+        orig_solve = bb.np.linalg.solve
+
+        def _boom(*a, **k):
+            raise RuntimeError("injected solve failure")
+
+        try:
+            bb.np.linalg.solve = _boom
+            # harmonize_views logs the caught failure (its designed recovery); mute
+            # that expected noise so a passing test doesn't print a scary traceback.
+            with contextlib.redirect_stdout(io.StringIO()), \
+                    contextlib.redirect_stderr(io.StringIO()):
+                out = bb.harmonize_views(t, c, anchor=0)          # must NOT raise
+        finally:
+            bb.np.linalg.solve = orig_solve
+
+        self.assertEqual(len(out), len(t))
+        for o, ref, orig in zip(out, t_ref, t):
+            self.assertTrue(torch.equal(o, ref))                 # returned inputs unchanged
+            self.assertTrue(torch.equal(orig, ref))              # inputs never mutated
 
 
 if __name__ == "__main__":
