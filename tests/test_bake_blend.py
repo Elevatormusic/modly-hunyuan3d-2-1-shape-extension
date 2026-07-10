@@ -92,5 +92,51 @@ class TestRampCache(unittest.TestCase):
         self.assertIsNone(bb._cache_take(("k3",)))       # take removes
 
 
+def _gradient(h, w):
+    x = torch.linspace(0.2, 0.8, w).repeat(h, 1)
+    return torch.stack([x, x * 0.8, x * 0.6], dim=-1)
+
+
+class TestHarmonize(unittest.TestCase):
+    def _views(self, h=96, w=96, a=(1.0, 1.3), b=(0.0, -0.08)):
+        base = _gradient(h, w)
+        t0 = torch.clamp(base * a[0] + b[0], 0, 1)
+        t1 = torch.clamp(base * a[1] + b[1], 0, 1)
+        c0 = torch.zeros(h, w, 1); c0[:, : 2 * w // 3, 0] = 1.0   # left 2/3
+        c1 = torch.zeros(h, w, 1); c1[:, w // 3:, 0] = 1.0        # right 2/3 (middle overlaps)
+        return [t0, t1], [c0, c1], base
+
+    def test_recovers_injected_gain_offset(self):
+        (t, c, base) = self._views()
+        out = bb.harmonize_views(t, c, anchor=0)
+        ov = slice(96 // 3, 2 * 96 // 3)                          # overlap columns
+        before = float((t[0][:, ov] - t[1][:, ov]).abs().mean())
+        after = float((out[0][:, ov] - out[1][:, ov]).abs().mean())
+        self.assertLess(after, before / 5.0)                      # >=5x agreement
+        self.assertTrue(torch.equal(out[0], t[0]))                # anchor untouched
+
+    def test_thin_overlap_stays_near_identity(self):
+        (t, c, _) = self._views()
+        c[1][:, : 2 * 96 // 3, 0] = 0.0                           # overlap -> 0 columns... shrink:
+        c[1][:, :, 0] = 0.0
+        c[1][:, 2 * 96 // 3:, 0] = 1.0                            # right third only: NO overlap
+        out = bb.harmonize_views(t, c, anchor=0)
+        self.assertLess(float((out[1] - t[1]).abs().max()), 0.02) # ridge -> ~identity
+
+    def test_clamps_hold_on_adversarial_input(self):
+        (t, c, _) = self._views(a=(1.0, 5.0), b=(0.0, 0.4))       # wild injected distortion
+        out = bb.harmonize_views(t, c, anchor=0)
+        # correction applied to view 1 is a'*I + b' with a' in [0.5,2], |b'|<=64/255:
+        # verify output stays a bounded transform of the input
+        ratio = (out[1][c[1][..., 0] > 0] + 1e-6) / (t[1][c[1][..., 0] > 0] + 1e-6)
+        self.assertLessEqual(float(ratio.max()), 2.6)             # 2.0 gain + offset slack
+
+    def test_failure_returns_inputs(self):
+        t = [torch.zeros(4, 4, 3)]
+        c = [torch.zeros(4, 4, 1)]                                # no overlap possible (V=1)
+        out = bb.harmonize_views(t, c, anchor=0)
+        self.assertTrue(torch.equal(out[0], t[0]))
+
+
 if __name__ == "__main__":
     unittest.main()

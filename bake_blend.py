@@ -80,3 +80,86 @@ def compute_ramps(cos_maps, feather_px=FEATHER_PX, ref_dim=4096):
             mask.astype(np.float32)).to(device=device, dtype=dtype)  # hard-zero outside
         ramps.append(r[..., None])
     return ramps
+
+
+def harmonize_views(textures, cos_maps, anchor=0, lam=RIDGE_LAMBDA, cap=SAMPLE_CAP):
+    """Solve per-view per-channel gain a_v + offset b_v from overlap regions
+    (anchor fixed at identity) and return corrected copies. Ridge-regularized
+    normal equations on summed pairwise residuals (lambda self-scales); clamps
+    keep a pathological solve to at worst a mild tint. Deterministic. On any
+    internal failure, returns the inputs unchanged (never raises)."""
+    try:
+        V = len(textures)
+        if V < 2:
+            return list(textures)
+        eps = 1e-4
+        vis = [c[..., 0] > eps for c in cos_maps]
+        n_unk = 2 * (V - 1)                     # (a_v, b_v) for v != anchor
+        others = [v for v in range(V) if v != anchor]
+        col = {v: i for i, v in enumerate(others)}
+        corrected = [t.clone() for t in textures]
+        for ch in range(textures[0].shape[-1]):
+            A = np.zeros((n_unk, n_unk))
+            rhs = np.zeros(n_unk)
+            n_pairs_used = 0
+            for i in range(V):
+                for j in range(i + 1, V):
+                    ov = (vis[i] & vis[j])
+                    idx = torch.nonzero(ov.reshape(-1), as_tuple=False).reshape(-1)
+                    if idx.numel() < 32:
+                        continue
+                    stride = max(1, idx.numel() * (V * (V - 1) // 2) // max(cap, 1))
+                    idx = idx[::stride]
+                    Ii = textures[i].reshape(-1, textures[i].shape[-1])[idx, ch].double().cpu().numpy()
+                    Ij = textures[j].reshape(-1, textures[j].shape[-1])[idx, ch].double().cpu().numpy()
+                    n_pairs_used += 1
+                    # residual r = (a_i I_i + b_i) - (a_j I_j + b_j); anchor: a=1, b=0
+                    # accumulate normal equations for x = [a_o..., b_o...]
+                    def _acc(vi, Iv, sign):
+                        """add sign * (coefficients of view vi) into row structures"""
+                        return (col[vi], sign)
+                    # build per-sample coefficient triples: (column, coeff)
+                    cols_i = None if i == anchor else col[i]
+                    cols_j = None if j == anchor else col[j]
+                    # constant term (from anchor side): if i is anchor, r has +I_i; if j is anchor, -I_j
+                    const = np.zeros_like(Ii)
+                    terms = []                       # list of (a_col, coeff_vec, b_col, coeff_scalar)
+                    if cols_i is None:
+                        const += Ii
+                    else:
+                        terms.append((cols_i, Ii, V - 1 + cols_i, 1.0))
+                    if cols_j is None:
+                        const -= Ij
+                    else:
+                        terms.append((cols_j, -Ij, V - 1 + cols_j, -1.0))
+                    # normal equations: for unknown columns p,q: A[p,q] += sum coeff_p*coeff_q
+                    # rhs[p] += -sum coeff_p * const   (since residual = sum coeff*x + const)
+                    flat = []
+                    for (ac, avec, bc, bsc) in terms:
+                        flat.append((ac, avec))
+                        flat.append((bc, np.full_like(avec, bsc)))
+                    for (p, cp) in flat:
+                        rhs[p] += -np.dot(cp, const)
+                        for (q, cq) in flat:
+                            A[p, q] += np.dot(cp, cq)
+            if n_pairs_used == 0:
+                continue
+            # ridge toward identity: a=1 (x_a = a-1 ... we solved for a directly), b=0.
+            # We solved with unknowns a,b directly, so shift: penalize (a-1) and b.
+            for v in others:
+                pa, pb = col[v], V - 1 + col[v]
+                A[pa, pa] += lam
+                rhs[pa] += lam * 1.0
+                A[pb, pb] += lam
+            x = np.linalg.solve(A + 1e-9 * np.eye(n_unk), rhs)
+            for v in others:
+                a = float(np.clip(x[col[v]], GAIN_CLAMP[0], GAIN_CLAMP[1]))
+                b = float(np.clip(x[V - 1 + col[v]], -OFFSET_CLAMP, OFFSET_CLAMP))
+                corrected[v][..., ch] = torch.clamp(
+                    textures[v][..., ch] * a + b, 0.0, 1.0)
+        return corrected
+    except Exception:
+        import traceback
+        traceback.print_exc()
+        print("[bake_blend] harmonize failed; using uncorrected views")
+        return list(textures)
