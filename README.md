@@ -66,6 +66,7 @@ A prompt like *"product render on a white background, 3/4 view, soft even lighti
 
 - **Full 2.1 shape model** — the 3.3B `hunyuan3d-dit-v2-1` checkpoint, high-fidelity image&#8594;mesh geometry.
 - **PBR texture pass** — albedo + packed metallic-roughness, painted from 6–9 camera views.
+- **Reduced-VRAM mode** — stages model components between CPU and GPU so full-quality textures run in **~13 GB instead of ~20**, at ~5% speed cost. Auto-picked when your card needs it.
 - **Seam-fix** — reconciles color jumps across UV-island edges so textures don't show hard seams (on by default).
 - **Mesh cleanup** — Regular / Isotropic / BPT neural retopology, with automatic fallbacks.
 - **Normal-map bake** — optional: bakes fine detail from the full-resolution mesh onto the clean base, with glTF tangents shipped in the file so it renders correctly in any viewer.
