@@ -1,0 +1,85 @@
+{
+  "id": "90f75c8e-e2f2-4b58-aa79-26c6af1d5e09",
+  "name": "Hunyuan3D 2.1 - Image to 3D (default)",
+  "description": "Drop in an image, generate a 3D mesh, export. The recommended starting point for the Hunyuan3D 2.1 Full extension.",
+  "nodes": [
+    {
+      "id": "23579aea-a1d8-49a4-9d15-d85ec1fbe502",
+      "type": "imageNode",
+      "position": {
+        "x": -190.00184460706078,
+        "y": 245.56855791690396
+      },
+      "data": {
+        "enabled": true,
+        "params": {},
+        "showInGenerate": true
+      },
+      "measured": {
+        "width": 123,
+        "height": 134
+      },
+      "selected": false,
+      "dragging": false
+    },
+    {
+      "id": "00d91b0e-7b56-4850-a794-adfab660178d",
+      "type": "extensionNode",
+      "position": {
+        "x": 42.08917190880061,
+        "y": 64.2031394150478
+      },
+      "data": {
+        "extensionId": "hunyuan3d-2-1-shape/generate",
+        "enabled": true,
+        "params": {},
+        "showInGenerate": true
+      },
+      "measured": {
+        "width": 392,
+        "height": 566
+      },
+      "selected": true,
+      "dragging": false
+    },
+    {
+      "id": "209b7eb7-c8de-4db1-b492-208b18c9d89f",
+      "type": "extensionNode",
+      "position": {
+        "x": 563.6996806112169,
+        "y": 111.48889406533945
+      },
+      "data": {
+        "extensionId": "mesh-exporter/export",
+        "enabled": true,
+        "params": {},
+        "showInGenerate": true
+      },
+      "measured": {
+        "width": 327,
+        "height": 159
+      },
+      "selected": false,
+      "dragging": false
+    }
+  ],
+  "edges": [
+    {
+      "type": "workflowEdge",
+      "source": "23579aea-a1d8-49a4-9d15-d85ec1fbe502",
+      "target": "00d91b0e-7b56-4850-a794-adfab660178d",
+      "targetHandle": "input-0",
+      "id": "xy-edge__23579aea-a1d8-49a4-9d15-d85ec1fbe502-00d91b0e-7b56-4850-a794-adfab660178dinput-0"
+    },
+    {
+      "type": "workflowEdge",
+      "source": "00d91b0e-7b56-4850-a794-adfab660178d",
+      "sourceHandle": "output",
+      "target": "209b7eb7-c8de-4db1-b492-208b18c9d89f",
+      "targetHandle": "input-0",
+      "id": "xy-edge__00d91b0e-7b56-4850-a794-adfab660178doutput-209b7eb7-c8de-4db1-b492-208b18c9d89finput-0"
+    }
+  ],
+  "createdAt": "2026-07-02T23:44:03.682Z",
+  "updatedAt": "2026-07-10T07:17:30.429Z"
+}

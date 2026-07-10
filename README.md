@@ -61,6 +61,14 @@ A few things make a generated image work well for image&#8594;3D:
 
 A prompt like *"product render on a white background, 3/4 view, soft even lighting"* works well. One honest note: busy photo backgrounds can confuse the mesh. The extension removes backgrounds automatically, but a clean source image gives the best geometry.
 
+### &#129513; Default workflow
+
+Don't want to wire up nodes yourself? Grab the ready-made workflow — it's the **image &#8594; generate &#8594; export** chain this extension is built around, already connected and ready to run.
+
+**[&#11015;&#65039; Download `hunyuan3d-2-1-default.json`](https://github.com/Elevatormusic/modly-hunyuan3d-2-1-shape-extension/raw/main/workflows/hunyuan3d-2-1-default.json)**
+
+Then in Modly: open the **Workflows** tab, click **Import**, and pick the file. Drop an image onto the first node, hit generate, and you'll get a mesh out the other end — no setup required.
+
 ---
 
 ## &#129513; What's inside
