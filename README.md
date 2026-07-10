@@ -85,7 +85,7 @@ A prompt like *"product render on a white background, 3/4 view, soft even lighti
 
 <sub>Measured on an RTX 3090 (512 view resolution, 6 views): 20.4 GB full-GPU vs 13.0 GB reduced, quality identical. Higher settings cost more — 768 view resolution adds ~14 GB (turn on **Use shared GPU memory**), and each view above 6 adds ~0.7 GB.</sub>
 
-<sub>The texture pass also needs a one-time C++/CUDA build toolchain (Visual Studio C++ Build Tools + a CUDA toolkit). Shape generation needs none, and if the toolchain is missing, texturing fails with a clear message while shape keeps working.</sub>
+<sub><b>No build tools needed on typical setups:</b> the extension ships prebuilt native modules for Windows + the standard PyTorch it installs (CUDA 12.8), covering RTX 20-series through Hopper natively and newer GPUs via driver JIT. Only if your setup falls outside that (older drivers on the CUDA 12.4 fallback, Linux) does the first texture run compile the modules itself — which then needs a one-time C++/CUDA toolchain (Visual Studio C++ Build Tools + a CUDA toolkit). Either way, shape generation is never affected.</sub>
 
 ---
 
@@ -235,5 +235,17 @@ And because **Auto** measures free VRAM at generation time and picks the full-GP
 - **Source:** `Tencent-Hunyuan/Hunyuan3D-2.1` (package `hy3dshape`)
 
 Model weights are under Tencent's `tencent-hunyuan-community` license — review it before commercial use.
+
+### License &amp; attribution
+
+The paint pass builds on the Tencent Hunyuan 3D 2.1 Works, and this repository
+redistributes prebuilt binaries compiled from lightly modified copies of them.
+The full license text is in [`LICENSE`](LICENSE) and the required attribution,
+the list of modified files, and the pass-through use restrictions are in
+[`NOTICE`](NOTICE). Use of the model and of the prebuilt binaries in
+[`prebuilt/`](prebuilt/) stays subject to the Tencent Hunyuan 3D 2.1 Community
+License Agreement and its Acceptable Use Policy — including the territorial
+scope (the license does not apply in the EU, UK, or South Korea) and the
+prohibited-uses list.
 
 <div align="center"><sub>A community extension for <a href="https://github.com/lightningpixel/modly">Modly</a>. Not affiliated with Tencent or lightningpixel.</sub></div>

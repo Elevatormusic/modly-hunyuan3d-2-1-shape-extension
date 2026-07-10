@@ -1258,11 +1258,185 @@ class Hunyuan3DShapeV21Generator(BaseGenerator):
                 return r
         return r
 
+    # --- Prebuilt native modules (skip the source build on matching ABI) ----- #
+    # A committed bundle of the two native modules, built once on the dev box.
+    # `_try_prebuilt_extensions` prefers them over the lazy source build when the
+    # ABI matches EXACTLY, and rolls back cleanly on any hiccup so the source
+    # build sees pristine state. See prebuilt/win_amd64-cp311-cu128/PROVENANCE.md.
+    _PREBUILT_DIRNAME = "win_amd64-cp311-cu128"
+    _PREBUILT_WHEEL   = "custom_rasterizer-0.1-cp311-cp311-win_amd64.whl"
+    _PREBUILT_INPAINT = "mesh_inpaint_processor.cp311-win_amd64.pyd"
+
+    def _prebuilt_bundle_dir(self) -> Path:
+        """Directory holding the committed prebuilt artifacts. Split out so tests
+        can point it at a synthetic bundle."""
+        return Path(__file__).resolve().parent / "prebuilt" / self._PREBUILT_DIRNAME
+
+    @staticmethod
+    def _sha256(path) -> str:
+        import hashlib
+        h = hashlib.sha256()
+        with open(path, "rb") as fh:
+            for chunk in iter(lambda: fh.read(1 << 20), b""):
+                h.update(chunk)
+        return h.hexdigest()
+
+    @staticmethod
+    def _parse_prebuilt_hashes(provenance_path) -> dict:
+        """Map artifact filename -> expected sha256, read from PROVENANCE.md.
+        Scans for any line carrying both a 64-hex digest and a *.whl / *.pyd
+        filename (the Checksums block), so it is robust to surrounding prose."""
+        import re
+        text = Path(provenance_path).read_text(encoding="utf-8")
+        hashes = {}
+        for line in text.splitlines():
+            hm = re.search(r"\b([0-9a-fA-F]{64})\b", line)
+            fm = re.search(r"(\S+\.(?:whl|pyd))", line)
+            if hm and fm:
+                hashes[Path(fm.group(1)).name] = hm.group(1).lower()
+        return hashes
+
+    def _try_prebuilt_extensions(self, paint_src: Path) -> bool:
+        """Apply the committed prebuilt native modules instead of building from
+        source. Returns True only if BOTH modules end up importable/present.
+
+        Fully guarded and TRANSACTIONAL: it installs the wheel and/or copies the
+        inpaint .pyd, and on ANY failure rolls back exactly what THIS call
+        created (pip-uninstall the wheel if it installed it; delete the .pyd if it
+        copied it), so the source-build fallback afterwards sees pristine state.
+        Never raises."""
+        import importlib, shutil, subprocess
+
+        installed_wheel = False   # True once step 2 pip-installed the wheel
+        copied_pyd = None         # Path if step 3 copied the inpaint .pyd
+        try:
+            try:
+                import torch
+            except Exception:
+                return False
+
+            # ABI gate — EXACT match (not startswith): win32 / cp311 / the exact
+            # torch build the artifacts were compiled against. Anything else
+            # falls straight through to the source build.
+            if not (sys.platform == "win32"
+                    and sys.version_info[:2] == (3, 11)
+                    and getattr(torch, "__version__", None) == "2.7.0+cu128"):
+                return False
+
+            bundle = self._prebuilt_bundle_dir()
+            wheel = bundle / self._PREBUILT_WHEEL
+            pyd = bundle / self._PREBUILT_INPAINT
+            provenance = bundle / "PROVENANCE.md"
+
+            # 1. All three artifacts present + sha256 matches PROVENANCE.
+            #    Corruption / a missing file → clean False, never a crash.
+            if not (wheel.is_file() and pyd.is_file() and provenance.is_file()):
+                return False
+            expected = self._parse_prebuilt_hashes(provenance)
+            for artifact in (wheel, pyd):
+                want = expected.get(artifact.name)
+                if not want or self._sha256(artifact) != want:
+                    return False
+
+            def _kernel_importable() -> bool:
+                try:
+                    importlib.import_module("custom_rasterizer_kernel")
+                    return True
+                except Exception:
+                    return False
+
+            # 2. Install the wheel (wrapper + kernel + dist-info) if the compiled
+            #    kernel isn't already importable. pip handles placement; no
+            #    hand-rolled site-packages pathing.
+            if not _kernel_importable():
+                r = subprocess.run(
+                    [sys.executable, "-m", "pip", "install", str(wheel),
+                     "--no-deps", "--force-reinstall"],
+                    capture_output=True, text=True)
+                if r.returncode != 0:
+                    raise RuntimeError(
+                        "pip install of prebuilt custom_rasterizer wheel failed:\n"
+                        f"{(r.stderr or '')[-2000:]}")
+                installed_wheel = True
+
+            # 3. Drop the inpaint .pyd into DifferentiableRenderer/ if absent.
+            dr_dir = paint_src / "DifferentiableRenderer"
+            existing = list(dr_dir.glob("mesh_inpaint_processor*.so")) + \
+                       list(dr_dir.glob("mesh_inpaint_processor*.pyd"))
+            if not existing:
+                dr_dir.mkdir(parents=True, exist_ok=True)
+                dest = dr_dir / self._PREBUILT_INPAINT
+                shutil.copyfile(str(pyd), str(dest))
+                copied_pyd = dest
+
+            # 4. Verify BOTH fully. Drop any cached namespace-package stub first,
+            #    then confirm the REAL wrapper (has `rasterize`, not just the
+            #    kernel) and that the inpaint .pyd is present.
+            importlib.invalidate_caches()
+            for _m in ("custom_rasterizer", "custom_rasterizer_kernel"):
+                sys.modules.pop(_m, None)
+            cr = importlib.import_module("custom_rasterizer")
+            if not hasattr(cr, "rasterize"):
+                raise RuntimeError(
+                    "custom_rasterizer imported but has no 'rasterize' attribute")
+            inpaint_present = list(dr_dir.glob("mesh_inpaint_processor*.so")) + \
+                              list(dr_dir.glob("mesh_inpaint_processor*.pyd"))
+            if not inpaint_present:
+                raise RuntimeError(
+                    "mesh_inpaint_processor .pyd missing after prebuilt apply")
+
+            print(f"[{self.MODEL_ID}] using prebuilt native modules "
+                  f"({self._PREBUILT_DIRNAME})")
+            return True
+        except Exception as exc:
+            # 5. Roll back exactly what THIS call created, then fall back.
+            try:
+                print(f"[{self.MODEL_ID}] prebuilt native modules unavailable "
+                      f"({exc}); falling back to source build")
+            except Exception:
+                pass
+            if copied_pyd is not None:
+                try:
+                    copied_pyd.unlink()
+                except OSError:
+                    pass
+            if installed_wheel:
+                try:
+                    _r = subprocess.run(
+                        [sys.executable, "-m", "pip", "uninstall", "-y",
+                         "custom_rasterizer"],
+                        capture_output=True, text=True)
+                    if _r.returncode != 0:
+                        # A failed uninstall leaves a wheel we couldn't verify
+                        # importable, which would make the source build skip
+                        # itself. Loud is the only defense here.
+                        print(f"[{self.MODEL_ID}] WARNING: prebuilt rollback "
+                              f"uninstall failed (rc={_r.returncode}) — the "
+                              "installed custom_rasterizer wheel may mask the "
+                              f"source build:\n{_r.stderr[-500:]}")
+                except Exception:
+                    pass
+            # Leave sys.modules pristine so the fallback re-imports cleanly.
+            for _m in ("custom_rasterizer", "custom_rasterizer_kernel"):
+                sys.modules.pop(_m, None)
+            try:
+                importlib.invalidate_caches()
+            except Exception:
+                pass
+            return False
+
     def _build_paint_extensions(self, paint_src: Path) -> None:
         """Compile custom_rasterizer (CUDA) and mesh_inpaint_processor (C++).
         Requires a matching CUDA toolkit (nvcc) and a C++ compiler (MSVC on
         Windows). Raises a clear error if the toolchain is missing."""
         import importlib, subprocess
+
+        # Prefer the committed prebuilt native modules on a matching ABI. This is
+        # transactional and never raises: on success the checks below find the
+        # kernel importable + the inpaint .pyd present and skip the source build;
+        # on any failure it has rolled back and left pristine state, so the
+        # source build runs exactly as it does without this feature.
+        self._try_prebuilt_extensions(paint_src)
 
         # 1. custom_rasterizer — a CUDA extension. The source tree's OUTER
         #    `custom_rasterizer/` folder has no __init__.py, so with paint_src on

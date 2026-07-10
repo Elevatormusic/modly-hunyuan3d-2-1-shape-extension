@@ -12,6 +12,12 @@ dist/
 *.so
 *.pyd
 
+# ...but the committed prebuilt native modules are part of the feature, not
+# build cruft. These negations MUST stay after the *.pyd rule above (order
+# matters in .gitignore) or the artifacts silently vanish from the repo.
+!prebuilt/**/*.pyd
+!prebuilt/**/*.whl
+
 # Modly local-link marker (points at a machine-specific path)
 .modly-local
 
