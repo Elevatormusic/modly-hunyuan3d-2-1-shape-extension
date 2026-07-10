@@ -27,7 +27,8 @@ def finish(glb_path, obj_path, *, dense_mesh, texture_size, mesh_mode,
             except Exception:
                 pass
 
-    rep = {"seam_fix": "off", "bake": "off", "validate": "off", "debug_sheet": "off"}
+    rep = {"seam_fix": "off", "normals": "off", "bake": "off", "validate": "off",
+           "debug_sheet": "off"}
 
     # 1. seam reconcile (albedo + MR), in place
     if seam_fix:
@@ -39,6 +40,22 @@ def finish(glb_path, obj_path, *, dense_mesh, texture_size, mesh_mode,
         except Exception as exc:
             rep["seam_fix"] = f"skipped ({exc})"
             _log(f"[finishing] seam fix skipped ({exc})")
+
+    # 1b. smooth vertex normals (crease-aware) — ALWAYS ON. The paint/export path
+    # never writes a NORMAL accessor, so viewers flat-shade the mesh (faceted).
+    # This writes per-vertex normals with a 45-deg crease threshold. Runs after
+    # seam_fix (the last geometry mutation) and before the bake, which then reads
+    # this crease-aware NORMAL. Non-fatal.
+    try:
+        import smooth_normals
+        _report(94, "Smoothing normals...")
+        ok = smooth_normals.apply_to_glb(glb_path, crease_deg=45.0)
+        rep["normals"] = "ok" if ok else "skipped"
+        if not ok:
+            _log("[finishing] smooth normals skipped; shipping without a NORMAL accessor")
+    except Exception as exc:
+        rep["normals"] = f"skipped ({exc})"
+        _log(f"[finishing] smooth normals skipped ({exc})")
 
     # 2. normal bake (default OFF), same gate + BPT skip as the old inline tail
     try:
