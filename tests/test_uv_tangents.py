@@ -70,6 +70,40 @@ class TestReadGlbArrays(unittest.TestCase):
         np.testing.assert_allclose(arr["uvs"][:, 0], uv[:, 0], atol=1e-6)
         np.testing.assert_allclose(arr["uvs"][:, 1], 1.0 - uv[:, 1], atol=1e-6)
 
+    def test_missing_normal_accessor_gets_trimesh_fallback(self):
+        # Production GLBs (mr_export / seam_fix path) ship no NORMAL accessor;
+        # read_glb_arrays must fall back to exactly the smooth normals
+        # attach_normal_texture will ship at re-export.
+        import trimesh
+        from tests._fixtures import unit_uv_quad
+        v, f, uv = unit_uv_quad()
+        m = trimesh.Trimesh(vertices=v, faces=f, process=False)
+        mat = trimesh.visual.material.PBRMaterial(baseColorFactor=[200, 200, 200, 255])
+        m.visual = trimesh.visual.TextureVisuals(uv=uv, material=mat)
+        with tempfile.TemporaryDirectory() as d:
+            glb = os.path.join(d, "quad.glb")
+            m.export(glb)  # no vertex_normals touched -> no NORMAL accessor
+            import pygltflib
+            g = pygltflib.GLTF2().load(glb)
+            self.assertIsNone(g.meshes[0].primitives[0].attributes.NORMAL)
+            arr = normal_bake.read_glb_arrays(glb)
+        ref = trimesh.Trimesh(vertices=arr["positions"], faces=arr["faces"],
+                              process=False).vertex_normals
+        np.testing.assert_allclose(arr["normals"], ref, atol=1e-6)
+        np.testing.assert_allclose(np.linalg.norm(arr["normals"], axis=1), 1.0,
+                                   atol=1e-6)
+
+    def test_missing_texcoord_raises_valueerror(self):
+        import trimesh
+        from tests._fixtures import unit_uv_quad
+        v, f, _ = unit_uv_quad()
+        m = trimesh.Trimesh(vertices=v, faces=f, process=False)
+        with tempfile.TemporaryDirectory() as d:
+            glb = os.path.join(d, "nouv.glb")
+            m.export(glb)
+            with self.assertRaises(ValueError):
+                normal_bake.read_glb_arrays(glb)
+
 
 if __name__ == "__main__":
     unittest.main()

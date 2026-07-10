@@ -1,12 +1,16 @@
 """High->low tangent-space normal-map bake for the Hunyuan3D-2.1 extension.
 
 Pipeline (all validated against the real 2.6M-face mesh, ~few seconds CPU):
-  1. low-poly base (already xatlas-unwrapped) -> rasterize UV atlas to per-texel
-     {position, interpolated smooth normal} + coverage mask.
-  2. Open3D closest-point onto the dense mesh -> interpolate its SMOOTH vertex
-     normals at the hit barycentric coords.
-  3. transform dense normal into the texel tangent frame, +Y encode, dilate seams.
-  4. attach as glTF normalTexture (force NORMAL export; no hand-authored TANGENT).
+  1. read the GLB's own accessor arrays (positions/normals/uvs/faces) — the one
+     source of truth — and compute per-vertex UV-space tangents (Lengyel).
+  2. rasterize UV atlas to per-texel {position, normal, tangent, handedness} +
+     coverage mask; Open3D closest-point onto the dense mesh -> interpolate its
+     SMOOTH vertex normals at the hit barycentric coords.
+  3. transform dense normal into the per-texel UV-tangent frame
+     (B = w * cross(N, T)), +Y encode, dilate seams.
+  4. attach as glTF normalTexture (force NORMAL export), then ship the SAME
+     per-vertex tangents as the glTF TANGENT accessor, so every compliant
+     viewer decodes in exactly the basis we encoded in (spec RV-A..D).
 """
 from __future__ import annotations
 import numpy as np
@@ -67,11 +71,25 @@ def read_glb_arrays(glb_path):
     faces = np.frombuffer(blob, dtype=comp[ia.componentType], count=ia.count,
                           offset=(g.bufferViews[ia.bufferView].byteOffset or 0) + (ia.byteOffset or 0)
                           ).astype(np.int64).reshape(-1, 3)
-    if prim.attributes.NORMAL is None or prim.attributes.TEXCOORD_0 is None:
-        raise ValueError("GLB primitive lacks NORMAL or TEXCOORD_0")
+    if prim.attributes.TEXCOORD_0 is None:
+        raise ValueError("GLB primitive lacks TEXCOORD_0 (no UVs)")
+    positions = acc(prim.attributes.POSITION, 3, np.float32)
+    if prim.attributes.NORMAL is not None:
+        normals = acc(prim.attributes.NORMAL, 3, np.float32)
+    else:
+        # Paint/mr_export/seam_fix GLBs ship no NORMAL accessor (trimesh only
+        # writes one when vertex normals were computed before export). The
+        # final GLB gets trimesh's smooth vertex normals at
+        # attach_normal_texture's re-export, so fall back to exactly those
+        # (same vertices, same faces, process=False -> identical array;
+        # encode basis == decode basis).
+        import trimesh
+        normals = np.asarray(
+            trimesh.Trimesh(vertices=positions, faces=faces,
+                            process=False).vertex_normals, np.float64)
     return dict(
-        positions=acc(prim.attributes.POSITION, 3, np.float32),
-        normals=acc(prim.attributes.NORMAL, 3, np.float32),
+        positions=positions,
+        normals=normals,
         uvs=acc(prim.attributes.TEXCOORD_0, 2, np.float32),
         faces=faces,
     )
@@ -132,17 +150,39 @@ def attach_tangents(glb_path, tangents, w):
         return False
 
 
-def rasterize_uv_atlas(verts, faces, uv, vertex_normals, size=2048):
-    """Barycentric-rasterize each triangle in UV space (origin bottom-left)."""
+def uv_to_texel(uv, size):
+    """Accessor-space (glTF) UV -> float texel coords (col = u*(size-1),
+    row = v*(size-1)); atlas array row 0 == PNG top row == glTF v=0, so no
+    flip anywhere. This is the ONE uv->texel conversion shared by the
+    rasterization, encode and export paths (spec RV-D: a V-flip bug must be
+    impossible to write twice)."""
+    return np.asarray(uv, np.float64) * (size - 1)
+
+
+def rasterize_uv_atlas(verts, faces, uv, vertex_normals, size=2048,
+                       vertex_tangents=None, tangent_w=None):
+    """Barycentric-rasterize each triangle in UV space.
+
+    UVs are accessor-space (glTF convention, v grows downward from the top
+    image row); the uv->texel mapping goes through uv_to_texel — the same
+    helper every other UV consumer uses. When vertex_tangents/tangent_w are
+    given, they are interpolated per texel too and the return grows to
+    (pos, nrm, mask, tan_map, w_map)."""
     verts = np.asarray(verts, np.float64)
     uv = np.asarray(uv, np.float64)
     vn = np.asarray(vertex_normals, np.float64)
     pos = np.zeros((size, size, 3), np.float32)
     nrm = np.zeros((size, size, 3), np.float32)
     mask = np.zeros((size, size), bool)
+    want_tan = vertex_tangents is not None
+    if want_tan:
+        vt = np.asarray(vertex_tangents, np.float64)
+        vw = np.asarray(tangent_w, np.float64)
+        tan_map = np.zeros((size, size, 3), np.float32)
+        w_map = np.ones((size, size), np.float32)
 
     for tri in faces:
-        uva, uvb, uvc = uv[tri] * (size - 1)
+        uva, uvb, uvc = uv_to_texel(uv[tri], size)
         minx = max(int(np.floor(min(uva[0], uvb[0], uvc[0]))), 0)
         maxx = min(int(np.ceil(max(uva[0], uvb[0], uvc[0]))), size - 1)
         miny = max(int(np.floor(min(uva[1], uvb[1], uvc[1]))), 0)
@@ -171,10 +211,18 @@ def rasterize_uv_atlas(verts, faces, uv, vertex_normals, size=2048):
         pos[pyi, pxi] = p.astype(np.float32)
         nrm[pyi, pxi] = n.astype(np.float32)
         mask[pyi, pxi] = True
+        if want_tan:
+            ta, tb, tc = vt[tri]
+            t = wa[:, None] * ta + wb[:, None] * tb + wc[:, None] * tc
+            tan_map[pyi, pxi] = t.astype(np.float32)
+            w_map[pyi, pxi] = (wa * vw[tri[0]] + wb * vw[tri[1]]
+                               + wc * vw[tri[2]]).astype(np.float32)
 
     ln = np.linalg.norm(nrm, axis=2, keepdims=True)
     ln[ln == 0] = 1.0
     nrm = nrm / ln
+    if want_tan:
+        return pos, nrm, mask, tan_map, w_map
     return pos, nrm, mask
 
 
@@ -228,19 +276,19 @@ def sample_dense_normals(dense, pos_map, mask, low_nrm=None, max_dist_frac=0.05)
     return flat.reshape(size, size, 3)
 
 
-def encode_tangent_space(low_nrm, world_nrm, mask):
+def encode_tangent_space(world_nrm, mask, tex_T, tex_w, tex_N):
     """Transform world-space dense normals into each texel's tangent frame (+Y encode).
 
-    Frame is built from the interpolated low normal + a world reference (T = ref x N,
-    B = N x T); a glTF viewer recomputes MikkTSpace tangents at render, so an exact
-    per-texel UV-gradient tangent is not required — only a stable, right-handed frame.
+    The frame is the interpolated per-vertex UV-tangent basis — the SAME basis
+    exported as the glTF TANGENT accessor — so every compliant viewer decodes
+    with exactly the basis we encoded in (spec RV-A/RV-C):
+    T re-orthogonalized vs N per texel, B = w * cross(N, T).
     """
-    up = np.array([0.0, 1.0, 0.0])
-    N = low_nrm
-    ref = np.where(np.abs(N[..., 1:2]) > 0.99, np.array([1.0, 0.0, 0.0]), up)
-    T = np.cross(ref, N)
-    T /= (np.linalg.norm(T, axis=2, keepdims=True) + 1e-9)
-    B = np.cross(N, T)
+    N = tex_N
+    T = tex_T - np.sum(tex_T * N, axis=2, keepdims=True) * N
+    T = T / (np.linalg.norm(T, axis=2, keepdims=True) + 1e-9)
+    w = np.where(tex_w[..., None] < 0.0, -1.0, 1.0)
+    B = w * np.cross(N, T)
     nt = np.stack([
         np.sum(world_nrm * T, axis=2),
         np.sum(world_nrm * B, axis=2),
@@ -299,28 +347,50 @@ def attach_normal_texture(glb_path, normal_png):
 def bake_normal_map(dense, low_glb_path, size=2048):
     """Bake dense-mesh detail onto the painted low base as a tangent-space normal map.
 
-    Returns True on success (writes <base>_normal.png + attaches normalTexture),
-    False on any failure (leaves the textured GLB unchanged).
+    Encode basis == decode basis by construction: ONE array set — the GLB's own
+    accessors (read_glb_arrays) — drives the tangent computation, the atlas
+    rasterization (via uv_to_texel, the single UV convention), the per-texel
+    encode, and the exported TANGENT attribute (spec RV-A..D).
+
+    Returns True on success (writes <base>_normal.png, attaches normalTexture
+    and the matching TANGENT accessor), False on any failure (leaves the
+    textured GLB unchanged).
     """
     try:
-        import trimesh
         from PIL import Image
-        scene = trimesh.load(low_glb_path, process=False)
-        low = (trimesh.util.concatenate(tuple(scene.geometry.values()))
-               if isinstance(scene, trimesh.Scene) else scene)
-        if low.visual is None or getattr(low.visual, "uv", None) is None:
-            print("[normal_bake] low mesh has no UVs; skipping")
+        try:
+            arr = read_glb_arrays(low_glb_path)
+        except ValueError as exc:
+            print(f"[normal_bake] low mesh has no UVs ({exc}); skipping")
             return False
-        uv = np.asarray(low.visual.uv, np.float64)
-        pos, low_nrm, mask = rasterize_uv_atlas(
-            low.vertices, low.faces, uv, low.vertex_normals, size)
+        verts, faces = arr["positions"], arr["faces"]
+        uv, vnorm = arr["uvs"], arr["normals"]
+        ln = np.linalg.norm(vnorm, axis=1, keepdims=True)
+        ln[ln == 0] = 1.0
+        vnorm = vnorm / ln
+        tan, w = compute_uv_tangents(verts, vnorm, uv, faces)
+        pos, low_nrm, mask, tex_T, tex_w = rasterize_uv_atlas(
+            verts, faces, uv, vnorm, size,
+            vertex_tangents=tan, tangent_w=w)
         world_nrm = sample_dense_normals(dense, pos, mask, low_nrm=low_nrm)
-        rgb = encode_tangent_space(low_nrm, world_nrm, mask)
+        rgb = encode_tangent_space(world_nrm, mask, tex_T, tex_w, low_nrm)
         rgb = dilate_map(rgb, mask)
         png = low_glb_path[:-4] + "_normal.png"
         Image.fromarray(rgb, "RGB").save(png)
+        with open(low_glb_path, "rb") as fh:
+            pre_bake_glb = fh.read()  # restored if the TANGENT export fails
         attach_normal_texture(low_glb_path, png)
-        print(f"[normal_bake] wrote {png} and attached normalTexture")
+        if not attach_tangents(low_glb_path, tan, w):
+            # A normal map without its exported basis would resurrect the
+            # viewer mismatch this bake exists to fix — fail honestly and
+            # keep the "False leaves the GLB unchanged" contract.
+            with open(low_glb_path, "wb") as fh:
+                fh.write(pre_bake_glb)
+            print("[normal_bake] TANGENT export failed; bake rolled back, "
+                  "leaving textured GLB unchanged")
+            return False
+        print(f"[normal_bake] wrote {png} and attached normalTexture "
+              f"basis=uv-tangent(exported)")
         return True
     except Exception as exc:
         import traceback
