@@ -186,21 +186,25 @@ class TestHarmonize(unittest.TestCase):
 
 
 class _FakeRender:
-    """Two 'views': left/right halves with a small overlap; view colors differ."""
+    """Two 'views': left/right halves with a small overlap; view colors differ.
+    front_cov/back_cov set the mask split; changing them simulates a different
+    mesh's geometry (different visibility -> different cos maps)."""
     def __init__(self, h=64, w=64):
         self.h, self.w = h, w
         self.calls = 0
+        self.front_cov = 0.6                   # 'front' covers left front_cov
+        self.back_cov = 0.4                    # 'back' covers right of back_cov on
 
     def back_project(self, view, elev, azim):
         h, w = self.h, self.w
         tex = torch.zeros(h, w, 3)
         cos = torch.zeros(h, w, 1)
-        if azim == 0:                          # 'front': left 60%
+        if azim == 0:                          # 'front': left front_cov
             tex[..., :] = torch.tensor(view[0])
-            cos[:, : int(w * 0.6), 0] = 0.9
-        else:                                  # 'back': right 60%
+            cos[:, : int(w * self.front_cov), 0] = 0.9
+        else:                                  # 'back': right of back_cov
             tex[..., :] = torch.tensor(view[1])
-            cos[:, int(w * 0.4):, 0] = 0.7
+            cos[:, int(w * self.back_cov):, 0] = 0.7
         self.calls += 1
         return tex, cos, None
 
@@ -248,6 +252,46 @@ class TestBakeEx(unittest.TestCase):
             bb.bake_from_multiview_ex(self.vp, self.views, self.elevs, self.azims, self.weights)
         finally:
             bb.harmonize_views = orig
+
+    def test_stale_entry_does_not_flip_next_albedo_to_mr(self):
+        # Poisoning: gen 1's albedo call stores ramps, but its MR call never runs
+        # (exception / CUDA-OOM between the two bakes). Gen 2 reuses the SAME vp
+        # object + SAME cameras but a DIFFERENT mesh (different visibility masks).
+        # Without a geometry fingerprint in the cache key, gen 2's ALBEDO call is
+        # misread as an MR call -> harmonization silently skipped and gen 1's
+        # ramps (from a different mesh) reused. The cos-map fingerprint makes the
+        # stale entry's key miss, so gen 2 correctly takes the albedo path.
+        calls = {"n": 0}
+        orig = bb.harmonize_views
+
+        def _counting(*a, **k):
+            calls["n"] += 1
+            return orig(*a, **k)
+
+        try:
+            bb.harmonize_views = _counting
+            # gen 1 albedo: harmonizes + stores ramps. NO MR call follows.
+            bb.bake_from_multiview_ex(
+                self.vp, self.views, self.elevs, self.azims, self.weights)
+            self.assertEqual(calls["n"], 1)               # gen 1 albedo harmonized
+            stale_keys = set(bb._RAMP_CACHE)
+            self.assertEqual(len(stale_keys), 1)          # stale entry survives
+
+            # gen 2: same vp + cameras, DIFFERENT geometry (shift the mask splits)
+            self.vp.render.front_cov = 0.8
+            self.vp.render.back_cov = 0.2
+            bb.bake_from_multiview_ex(
+                self.vp, self.views, self.elevs, self.azims, self.weights)
+        finally:
+            bb.harmonize_views = orig
+
+        # gen 2's albedo was NOT flipped to MR: it harmonized again.
+        self.assertEqual(calls["n"], 2)
+        # a fresh entry appeared under a new fingerprinted key (exactly one), so
+        # gen 2's own MR pass will find ITS ramps; the stale key is now
+        # unreachable and the <=2 LRU evicts it on the next put.
+        new_keys = set(bb._RAMP_CACHE) - stale_keys
+        self.assertEqual(len(new_keys), 1)
 
 
 if __name__ == "__main__":

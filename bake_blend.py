@@ -25,7 +25,7 @@ GAIN_CLAMP = (0.5, 2.0)
 OFFSET_CLAMP = 64.0 / 255.0
 _EDT_MAX_GRID = 2048       # EDT cost: 1.05 s @4096^2 vs 0.26 s @2048^2 (measured)
 
-_RAMP_CACHE = {}           # (id(vp), elevs, azims) -> list[ramp]; albedo stores, MR takes
+_RAMP_CACHE = {}           # (id(vp), elevs, azims, cos_sig) -> list[ramp]; albedo stores, MR takes
 
 
 def _cache_put(key, ramps):
@@ -36,6 +36,12 @@ def _cache_put(key, ramps):
 
 def _cache_take(key):
     return _RAMP_CACHE.pop(key, None)
+
+
+def _cos_sig(cos_maps):
+    """Cheap geometry fingerprint: identical for the albedo/MR pair of one
+    generation (cos maps are geometry-only), different across meshes."""
+    return tuple(round(float(c.sum().item()), 4) for c in cos_maps)
 
 
 def merge(textures, cos_maps):
@@ -172,7 +178,7 @@ def bake_from_multiview_ex(vp, views, camera_elevs, camera_azims, view_weights):
         tex, cos, _boundary = vp.render.back_project(view, elev, azim)
         cos_maps.append(weight * (cos ** vp.config.bake_exp))
         textures.append(tex)
-    key = (id(vp), tuple(camera_elevs), tuple(camera_azims))
+    key = (id(vp), tuple(camera_elevs), tuple(camera_azims), _cos_sig(cos_maps))
     ramps = _cache_take(key)
     if ramps is None or len(ramps) != len(cos_maps):
         # albedo pass: harmonize colors, compute ramps, keep them for the MR pass
