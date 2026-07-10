@@ -3,7 +3,7 @@
 <img src="assets/banner.png" alt="Hunyuan3D 2.1 Full - Modly extension" width="100%">
 
 <p>
-  <a href="https://github.com/Elevatormusic/modly-hunyuan3d-2-1-shape-extension"><img src="https://img.shields.io/badge/version-1.7.0-982598" alt="version"></a>
+  <a href="https://github.com/Elevatormusic/modly-hunyuan3d-2-1-shape-extension"><img src="https://img.shields.io/badge/version-1.7.1-982598" alt="version"></a>
   <img src="https://img.shields.io/badge/Modly-model_extension-15173D" alt="Modly model extension">
   <img src="https://img.shields.io/badge/Windows_%C2%B7_Linux-CUDA-15173D" alt="platform">
   <img src="https://img.shields.io/badge/shape-~10_GB_VRAM-982598" alt="shape vram">
@@ -41,9 +41,10 @@ Wraps the full **Hunyuan3D-2.1** shape checkpoint (Tencent's 3.3B `hunyuan3d-dit
 
 ## &#9889; Quick start
 
-1. In Modly: **Extensions &#8594; Install from GitHub**, paste this repo's URL. It builds its own isolated Python environment automatically.
-2. Click **Download** on the model variant (~7.4 GB weights, one time).
-3. Drop in an image and generate. Want color? Switch on **Generate textures (PBR)**.
+1. You'll need **[Modly](https://github.com/lightningpixel/modly)** — the free, open-source desktop app this extension plugs into (generates 3D models from images, entirely on your GPU). Install it first.
+2. In Modly: **Extensions &#8594; Install from GitHub**, paste this repo's URL. It builds its own isolated Python environment automatically.
+3. Click **Download** on the model variant (~7.4 GB weights, one time).
+4. Drop in an image and generate. Want color? Switch on **Generate textures (PBR)**.
 
 > **Just want the shape?** It needs only ~10 GB VRAM and no build tools — leave textures off and you're done in under a minute on a modern card.
 
