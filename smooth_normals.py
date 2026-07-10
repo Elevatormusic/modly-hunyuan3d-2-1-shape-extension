@@ -107,6 +107,7 @@ def crease_smooth(positions, faces, uvs, *, crease_deg=45.0):
 def _verify_glb(path):
     """True iff first primitive has NORMAL (count == POSITION), a TEXCOORD_0, and
     at least one material — the post-export invariants."""
+    # NOTE: checks the FIRST primitive only (single-mesh assumption; the production asset is single-mesh).
     import pygltflib
     g = pygltflib.GLTF2().load(path)
     prim = g.meshes[0].primitives[0]

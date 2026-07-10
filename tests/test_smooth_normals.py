@@ -85,9 +85,12 @@ class TestCreaseSmooth(unittest.TestCase):
         self.assertTrue(nF.max() < len(nP))
 
 
+import io
 import os
+import pathlib
 import shutil
 import tempfile
+import unittest.mock
 
 
 def _build_no_normal_glb(path):
@@ -153,9 +156,57 @@ class TestApplyToGlb(unittest.TestCase):
         bad = os.path.join(self.d, "bad.glb")
         with open(bad, "wb") as f:
             f.write(b"not a glb at all")
-        before = open(bad, "rb").read()
+        before = pathlib.Path(bad).read_bytes()
         self.assertFalse(sn.apply_to_glb(bad))
-        self.assertEqual(open(bad, "rb").read(), before)      # byte-identical
+        self.assertEqual(pathlib.Path(bad).read_bytes(), before)  # byte-identical
+
+    def test_verify_failure_leaves_file_byte_identical(self):
+        # export succeeds but _verify_glb rejects it -> return False, original untouched
+        before = pathlib.Path(self.glb).read_bytes()
+        with unittest.mock.patch.object(sn, "_verify_glb", return_value=False):
+            ok = sn.apply_to_glb(self.glb, crease_deg=45.0)
+        self.assertFalse(ok)
+        self.assertEqual(pathlib.Path(self.glb).read_bytes(), before)  # byte-identical
+
+
+class TestJpegPreservation(unittest.TestCase):
+    def setUp(self):
+        self.d = tempfile.mkdtemp()
+        self.glb = os.path.join(self.d, "jpeg.glb")
+        self._build_jpeg_glb(self.glb)
+
+    def tearDown(self):
+        shutil.rmtree(self.d, ignore_errors=True)
+
+    @staticmethod
+    def _build_jpeg_glb(path):
+        """Like _build_no_normal_glb but the baseColorTexture is a REAL
+        JPEG-encoded PIL image (img.format == 'JPEG')."""
+        import trimesh
+        from trimesh.visual.material import PBRMaterial
+        from PIL import Image
+        P = np.array([[0, 0, 0], [1, 0, 0], [1, 1, 0], [0, 1, 0],
+                      [1, 0, 1], [1, 1, 1]], float)
+        F = np.array([[0, 1, 2], [0, 2, 3], [1, 4, 5], [1, 5, 2]])
+        UV = np.array([[0, 0], [1, 0], [1, 1], [0, 1], [1, 0], [1, 1]], float)
+        mesh = trimesh.Trimesh(vertices=P, faces=F, process=False)
+        buf = io.BytesIO()
+        Image.new("RGB", (16, 16), (200, 160, 40)).save(buf, format="JPEG")
+        img = Image.open(io.BytesIO(buf.getvalue()))
+        assert img.format == "JPEG"                          # precondition
+        mesh.visual = trimesh.visual.TextureVisuals(
+            uv=UV, material=PBRMaterial(baseColorTexture=img, metallicFactor=0.0))
+        trimesh.Scene(mesh).export(path)
+        return path
+
+    def test_jpeg_texture_stays_jpeg(self):
+        import pygltflib
+        ok = sn.apply_to_glb(self.glb, crease_deg=45.0)
+        self.assertTrue(ok)
+        g = pygltflib.GLTF2().load(self.glb)
+        self.assertEqual(g.images[0].mimeType, "image/jpeg")  # NOT image/png (no re-encode)
+        prim = g.meshes[0].primitives[0]
+        self.assertIsNotNone(prim.attributes.NORMAL)          # NORMAL now present
 
 
 if __name__ == "__main__":
