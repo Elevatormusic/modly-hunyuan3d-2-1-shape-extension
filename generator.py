@@ -896,6 +896,87 @@ class Hunyuan3DShapeV21Generator(BaseGenerator):
                 tgp.write_text(text, encoding="utf-8")
                 print(f"[{self.MODEL_ID}] patched paint-stage progress milestones into textureGenPipeline.py")
 
+        # 9. Bake-blend merge (harmonize + EDT-feathered view blend). Copies bake_blend.py
+        # next to the paint code and reroutes ViewProcessor.bake_from_multiview through
+        # bake_blend.bake_from_multiview_ex so view-handoff frontiers stop showing as ragged
+        # cliffs (EB_BAKE_BLEND=legacy restores stock; the patched body also falls back to the
+        # stock merge on any bake_blend error -> speed/quality only, never correctness).
+        # Placed after the eb_accel copy but INDEPENDENT of it: bake_blend imports nothing from
+        # eb_accel. Idempotent; a no-op on the already-patched live vendored file.
+        self._patch_bake_blend(paint_src)
+
+    @staticmethod
+    def _patch_bake_blend(paint_src: Path) -> None:
+        """Section 9: ship bake_blend.py next to the vendored paint code and reroute
+        ViewProcessor.bake_from_multiview (utils/pipeline_utils.py) through
+        bake_blend.bake_from_multiview_ex — per-view color harmonization + EDT-feathered view
+        blending so view-handoff frontiers stop reading as visible cliffs. The patched body
+        honors EB_BAKE_BLEND=legacy (stock merge) and falls back to the stock merge on any
+        bake_blend exception, so this only changes texture quality, never correctness.
+
+        Anchored on the PRISTINE upstream body so it reproduces on a clean download; guarded by
+        a marker ("bake_blend") so re-running on the hand-patched live vendored file is a no-op.
+        Never raises; bake_blend imports nothing from eb_accel (independent of the copy above)."""
+        import shutil
+
+        helper = Path(__file__).resolve().parent / "bake_blend.py"
+        if not helper.exists():
+            print("[hunyuan3d-2-1-shape] bake_blend.py not found next to generator.py; skipping bake-blend")
+            return
+        try:
+            shutil.copyfile(helper, paint_src / "bake_blend.py")
+        except OSError as exc:
+            print(f"[hunyuan3d-2-1-shape] could not copy bake_blend.py: {exc}")
+            return
+
+        pu = paint_src / "utils" / "pipeline_utils.py"
+        if not pu.exists():
+            return
+        text = pu.read_text(encoding="utf-8")
+        stock = (
+            "    def bake_from_multiview(self, views, camera_elevs, camera_azims, view_weights):\n"
+            "        project_textures, project_weighted_cos_maps = [], []\n"
+            "        project_boundary_maps = []\n"
+            "\n"
+            "        for view, camera_elev, camera_azim, weight in zip(views, camera_elevs, camera_azims, view_weights):\n"
+            "            project_texture, project_cos_map, project_boundary_map = self.render.back_project(\n"
+            "                view, camera_elev, camera_azim\n"
+            "            )\n"
+            "            project_cos_map = weight * (project_cos_map**self.config.bake_exp)\n"
+            "            project_textures.append(project_texture)\n"
+            "            project_weighted_cos_maps.append(project_cos_map)\n"
+            "            project_boundary_maps.append(project_boundary_map)\n"
+            "            texture, ori_trust_map = self.render.fast_bake_texture(project_textures, project_weighted_cos_maps)\n"
+            "        return texture, ori_trust_map > 1e-8\n"
+        )
+        new = (
+            "    def bake_from_multiview(self, views, camera_elevs, camera_azims, view_weights):\n"
+            "        # --- eb bake-blend patch: harmonize + feathered view merge ---\n"
+            "        import os as _os\n"
+            '        if _os.environ.get("EB_BAKE_BLEND", "").strip().lower() != "legacy":\n'
+            "            try:\n"
+            "                import bake_blend\n"
+            "                return bake_blend.bake_from_multiview_ex(\n"
+            "                    self, views, camera_elevs, camera_azims, view_weights)\n"
+            "            except Exception:\n"
+            "                import traceback\n"
+            "                traceback.print_exc()\n"
+            '                print("[bake_blend] failed; falling back to stock merge")\n'
+            "        project_textures, project_weighted_cos_maps = [], []\n"
+            "        for view, camera_elev, camera_azim, weight in zip(views, camera_elevs, camera_azims, view_weights):\n"
+            "            project_texture, project_cos_map, _project_boundary_map = self.render.back_project(\n"
+            "                view, camera_elev, camera_azim\n"
+            "            )\n"
+            "            project_cos_map = weight * (project_cos_map**self.config.bake_exp)\n"
+            "            project_textures.append(project_texture)\n"
+            "            project_weighted_cos_maps.append(project_cos_map)\n"
+            "        texture, ori_trust_map = self.render.fast_bake_texture(project_textures, project_weighted_cos_maps)\n"
+            "        return texture, ori_trust_map > 1e-8\n"
+        )
+        if "bake_blend" not in text and stock in text:
+            pu.write_text(text.replace(stock, new), encoding="utf-8")
+            print("[hunyuan3d-2-1-shape] patched bake-blend merge into pipeline_utils.py")
+
     @staticmethod
     def _patch_phase_offload(paint_src: Path) -> None:
         """Section 8: reproduce the hook-free EB_CPU_OFFLOAD=phase edits onto a freshly
