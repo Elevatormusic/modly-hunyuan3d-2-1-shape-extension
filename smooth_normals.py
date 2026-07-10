@@ -14,6 +14,16 @@ private/specs/2026-07-10-smooth-normals-{design,research}.md.
 from __future__ import annotations
 import numpy as np
 
+# Crease-selection hysteresis + chain-coherence knobs (see
+# private/plans/2026-07-10-crease-coherence.md). A welded edge is a HARD crease
+# only at >= crease_deg + CREASE_HYST_DEG; edges in the [crease_deg-HYST,
+# crease_deg+HYST) BAND are creases only when they belong to a connected crease
+# chain that (a) contains at least one hard edge and (b) spans >= MIN_CHAIN_EDGES
+# edges. This suppresses the noisy 1-2-edge crevice fragments that otherwise
+# flicker hard/soft along clump contact lines.
+CREASE_HYST_DEG = 10.0
+MIN_CHAIN_EDGES = 5
+
 
 def _weld_index(vertices, tol_rel=1e-6):
     """Map each vertex -> a welded (by-position) id. Same rounding scheme as
@@ -40,6 +50,8 @@ def crease_smooth(positions, faces, uvs, *, crease_deg=45.0):
     """
     import trimesh
     from trimesh.graph import connected_components
+    from scipy.sparse import coo_matrix
+    from scipy.sparse.csgraph import connected_components as _cc_labels
 
     positions = np.asarray(positions, np.float64)
     uvs = np.asarray(uvs, np.float64)
@@ -61,11 +73,36 @@ def crease_smooth(positions, faces, uvs, *, crease_deg=45.0):
     adj = np.asarray(m.face_adjacency)                 # (k,2) exactly-2-face welded edges
     ang = np.asarray(m.face_adjacency_angles, np.float64)
 
-    # 3. smoothing groups: join faces only across sub-crease welded edges
+    # 3. crease selection: hysteresis + chain coherence. Hard edges anchor
+    #    crease chains; a band edge is a crease only when its connected candidate
+    #    chain contains a hard edge AND is >= MIN_CHAIN_EDGES long. crease_final is
+    #    a boolean over adjacency rows (True == keep as a hard shading edge).
+    crease_final = np.zeros(len(adj), dtype=bool)
     if len(adj):
-        keep = adj[ang < np.radians(crease_deg)]
-    else:
-        keep = np.zeros((0, 2), np.int64)
+        crease_rad = np.radians(crease_deg)
+        hyst_rad = np.radians(CREASE_HYST_DEG)
+        hard = ang >= (crease_rad + hyst_rad)
+        band = (ang >= (crease_rad - hyst_rad)) & ~hard
+        cand = hard | band
+        if cand.any():
+            fae = np.asarray(m.face_adjacency_edges, np.int64)  # welded vertex pair / adj row
+            nv = len(wpos)
+            ci = np.where(cand)[0]                          # candidate adjacency rows
+            va, vb = fae[ci, 0], fae[ci, 1]
+            # chain candidates via shared welded vertices: connected components of
+            # the welded-vertex graph whose edges are the candidate creases.
+            graph = coo_matrix((np.ones(len(ci)), (va, vb)), shape=(nv, nv))
+            _, labels = _cc_labels(graph, directed=False)
+            elab = labels[va]                              # chain id per candidate edge
+            n_lab = int(labels.max()) + 1
+            edges_per = np.bincount(elab, minlength=n_lab)
+            hard_per = np.bincount(elab, weights=hard[ci].astype(np.float64), minlength=n_lab)
+            kept_lab = (edges_per >= MIN_CHAIN_EDGES) & (hard_per > 0.0)
+            crease_final[ci] = kept_lab[elab]
+
+    # 4. smoothing groups: join every non-crease adjacency (incl. dropped
+    #    candidates) so only surviving crease chains split vertices.
+    keep = adj[~crease_final] if len(adj) else np.zeros((0, 2), np.int64)
     comps = connected_components(keep, nodes=np.arange(n_faces), min_len=1)
     face_group = np.zeros(n_faces, np.int64)
     for gi, comp in enumerate(comps):

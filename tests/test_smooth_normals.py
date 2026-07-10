@@ -25,6 +25,38 @@ def _two_tri(theta_deg, uv_seam=False):
     return P, F, UV
 
 
+def _fold_strip(thetas):
+    """A continuous fold LINE with len(thetas) segments. A shared hinge row
+    H_0..H_N sits on the x-axis and a continuous flap-A quad strip lies in the
+    z=0 plane; each segment i also carries a single flap-B triangle folded up by
+    thetas[i] about the hinge. So hinge edge i has dihedral == thetas[i] while
+    every other welded edge is coplanar (0 deg). The N hinge edges form ONE
+    connected crease chain (consecutive edges share a welded hinge vertex)."""
+    N = len(thetas)
+    P = [[float(i), 0.0, 0.0] for i in range(N + 1)]           # hinge row   0 .. N
+    P += [[float(i), 1.0, 0.0] for i in range(N + 1)]          # flap-A row  N+1 ..
+    h = list(range(0, N + 1))
+    a = list(range(N + 1, 2 * (N + 1)))
+    F = []
+    for i, th in enumerate(thetas):
+        t = math.radians(th)
+        F.append([h[i], h[i + 1], a[i + 1]])                   # flap-A quad tri 1 (hinge)
+        F.append([h[i], a[i + 1], a[i]])                       # flap-A quad tri 2
+        b = len(P)
+        P.append([i + 0.5, -math.cos(t), math.sin(t)])         # flap-B apex, folded
+        F.append([h[i + 1], h[i], b])                          # flap-B tri (reversed hinge)
+    return np.array(P, float), np.array(F, int), np.zeros((len(P), 2))
+
+
+def _distinct_normals_at(nP, N, pos):
+    """Unique output-vertex normal directions coincident with pos (a crease that
+    splits a vertex yields >= 2; a smoothed vertex yields exactly 1)."""
+    at = np.where(np.linalg.norm(nP - np.asarray(pos, float), axis=1) < 1e-9)[0]
+    if len(at) == 0:
+        return np.zeros((0, 3))
+    return np.unique(np.round(N[at], 5), axis=0)
+
+
 class TestCreaseSmooth(unittest.TestCase):
     def test_flat_no_split_axis_aligned(self):
         P, F, UV = _two_tri(0.0)
@@ -47,13 +79,52 @@ class TestCreaseSmooth(unittest.TestCase):
         self.assertTrue(np.allclose(np.linalg.norm(N, axis=1), 1.0, atol=1e-6))
 
     def test_hard_fold_splits(self):
-        P, F, UV = _two_tri(90.0)                          # above 45 -> hard edge
+        # a LONG 90-deg fold line (6 shared hinge edges): the crease chain
+        # contains hard edges AND spans >= MIN_CHAIN_EDGES, so it STILL splits
+        # into per-side normals (the sharp shading edge is preserved).
+        P, F, UV = _fold_strip([90.0] * 6)
         nP, nU, nF, N = sn.crease_smooth(P, F, UV, crease_deg=45.0)
-        self.assertEqual(len(nP), 6)                       # v0,v1 each split in two
-        # no normal is the 45-deg blend of the two faces
-        blend = np.array([0, math.sqrt(.5), math.sqrt(.5)])
+        self.assertGreater(len(nP), len(np.unique(P, axis=0)))  # verts split
+        # the flat flap-A normal (+z) survives; no 45-deg blend of the two flaps
+        self.assertTrue(np.any(np.linalg.norm(N - np.array([0, 0, 1.0]), axis=1) < 1e-6))
+        blend = np.array([0.0, math.sqrt(.5), math.sqrt(.5)])
         self.assertTrue(np.all(np.linalg.norm(N - blend, axis=1) > 0.1))
         self.assertTrue(np.all(np.linalg.norm(N + blend, axis=1) > 0.1))
+        self.assertTrue(np.allclose(np.linalg.norm(N, axis=1), 1.0, atol=1e-6))
+
+    def test_isolated_fragment_smoothed(self):
+        # the old 2-triangle 90-deg fold is a 1-edge crease chain -> below
+        # MIN_CHAIN_EDGES, so it is now SMOOTHED (no split), normals blended.
+        P, F, UV = _two_tri(90.0)
+        nP, nU, nF, N = sn.crease_smooth(P, F, UV, crease_deg=45.0)
+        self.assertEqual(len(nP), 4)                        # 4 verts stay 4
+        # a blended shared-vertex normal exists (differs from the pure flap-A one)
+        self.assertTrue(np.any(np.linalg.norm(N - np.array([0, 0, 1.0]), axis=1) > 1e-3))
+        self.assertTrue(np.allclose(np.linalg.norm(N, axis=1), 1.0, atol=1e-6))
+
+    def test_flicker_band_smoothed(self):
+        # a corrugated fold line whose every edge sits in the hysteresis BAND
+        # (~40/50 deg, none >= 55) -> no chain contains a hard edge -> nothing is
+        # kept -> fully smooth, no vertex splits (kills the hard/soft flicker).
+        P, F, UV = _fold_strip([40.0, 50.0, 40.0, 50.0, 40.0, 50.0])
+        nP, nU, nF, N = sn.crease_smooth(P, F, UV, crease_deg=45.0)
+        self.assertEqual(len(nP), len(np.unique(P, axis=0)))   # no split
+        for x in range(1, 6):                                  # every interior hinge
+            self.assertEqual(len(_distinct_normals_at(nP, N, [x, 0, 0])), 1)
+        self.assertTrue(np.allclose(np.linalg.norm(N, axis=1), 1.0, atol=1e-6))
+
+    def test_band_bridges_hard_chain(self):
+        # a long fold line: mostly hard (~65 deg) with a few middle segments in
+        # the sub-threshold band (~38-42 deg). The band edges share the crease
+        # chain with the hard edges, so the WHOLE line is kept -> every segment
+        # splits, with NO smooth gaps in the middle of the crease.
+        P, F, UV = _fold_strip([65.0, 65.0, 40.0, 38.0, 42.0, 65.0, 65.0])
+        nP, nU, nF, N = sn.crease_smooth(P, F, UV, crease_deg=45.0)
+        self.assertGreater(len(nP), len(np.unique(P, axis=0)))  # split happened
+        for x in range(1, 7):                                   # incl. the band region
+            self.assertGreaterEqual(len(_distinct_normals_at(nP, N, [x, 0, 0])), 2,
+                                    f"smooth gap at hinge x={x}")
+        self.assertTrue(np.allclose(np.linalg.norm(N, axis=1), 1.0, atol=1e-6))
 
     def test_uv_seam_no_crease_is_smoothed(self):
         # flat, but a UV seam along the shared edge: both duplicates must get the
