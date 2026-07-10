@@ -90,10 +90,13 @@ def compute_ramps(cos_maps, feather_px=FEATHER_PX, ref_dim=4096):
 
 def harmonize_views(textures, cos_maps, anchor=0, lam=RIDGE_LAMBDA, cap=SAMPLE_CAP):
     """Solve per-view per-channel gain a_v + offset b_v from overlap regions
-    (anchor fixed at identity) and return corrected copies. Ridge-regularized
-    normal equations on summed pairwise residuals (lambda self-scales); clamps
-    keep a pathological solve to at worst a mild tint. Deterministic. On any
-    internal failure, returns the inputs unchanged (never raises)."""
+    (anchor fixed at identity), correct IN PLACE, and return the SAME list.
+    Ridge-regularized normal equations on summed pairwise residuals (lambda
+    self-scales); clamps keep a pathological solve to at worst a mild tint.
+    Deterministic. ALL channels are solved before ANY texture is written, so on
+    any internal failure the inputs are returned byte-for-byte unchanged (never
+    raises). In-place avoids a full second copy of the view stack (the ~V*4096^2*3
+    fp32 the clone used to hold, +1.15-1.7 GB CUDA)."""
     try:
         V = len(textures)
         if V < 2:
@@ -103,7 +106,7 @@ def harmonize_views(textures, cos_maps, anchor=0, lam=RIDGE_LAMBDA, cap=SAMPLE_C
         n_unk = 2 * (V - 1)                     # (a_v, b_v) for v != anchor
         others = [v for v in range(V) if v != anchor]
         col = {v: i for i, v in enumerate(others)}
-        corrected = [t.clone() for t in textures]
+        coeffs = {}                             # (v, ch) -> (a, b); applied only AFTER every channel solves
         for ch in range(textures[0].shape[-1]):
             A = np.zeros((n_unk, n_unk))
             rhs = np.zeros(n_unk)
@@ -158,9 +161,13 @@ def harmonize_views(textures, cos_maps, anchor=0, lam=RIDGE_LAMBDA, cap=SAMPLE_C
             for v in others:
                 a = float(np.clip(x[col[v]], GAIN_CLAMP[0], GAIN_CLAMP[1]))
                 b = float(np.clip(x[V - 1 + col[v]], -OFFSET_CLAMP, OFFSET_CLAMP))
-                corrected[v][..., ch] = torch.clamp(
-                    textures[v][..., ch] * a + b, 0.0, 1.0)
-        return corrected
+                coeffs[(v, ch)] = (a, b)
+        # every channel solved without raising -> apply all corrections in place
+        # (atomic: a mid-solve failure above leaves every texture untouched)
+        for (v, ch), (a, b) in coeffs.items():
+            textures[v][..., ch] = torch.clamp(
+                textures[v][..., ch] * a + b, 0.0, 1.0)
+        return textures
     except Exception:
         import traceback
         traceback.print_exc()
@@ -170,21 +177,42 @@ def harmonize_views(textures, cos_maps, anchor=0, lam=RIDGE_LAMBDA, cap=SAMPLE_C
 
 def bake_from_multiview_ex(vp, views, camera_elevs, camera_azims, view_weights):
     """Drop-in body for ViewProcessor.bake_from_multiview (patched call site).
-    Albedo call (first with this key): harmonize + compute & store feather
-    ramps. MR call (second, same cameras): identity harmonization, reuse ramps
-    (cos maps are geometry-only, identical between the two bakes - RV-4)."""
+    Albedo call (first with this key): harmonize + compute & store feather ramps
+    alongside a fingerprint of THIS pass's textures. MR call (same cameras/
+    geometry but DIFFERENT texture content): identity harmonization, reuse ramps
+    (cos maps are geometry-only, identical between the two bakes - RV-4).
+
+    A key hit alone is NOT proof of an MR call: a crash between the albedo
+    `_cache_put` and the MR `_cache_take` leaves an entry that an identical-
+    geometry re-run's ALBEDO call would also hit. So the stored texture
+    fingerprint decides the role - different content => true MR (skip harmonize);
+    identical content => repeat-albedo (harmonize + re-store so the real MR pass
+    still pairs)."""
     textures, cos_maps = [], []
     for view, elev, azim, weight in zip(views, camera_elevs, camera_azims, view_weights):
         tex, cos, _boundary = vp.render.back_project(view, elev, azim)
         cos_maps.append(weight * (cos ** vp.config.bake_exp))
         textures.append(tex)
     key = (id(vp), tuple(camera_elevs), tuple(camera_azims), _cos_sig(cos_maps))
-    ramps = _cache_take(key)
-    if ramps is None or len(ramps) != len(cos_maps):
-        # albedo pass: harmonize colors, compute ramps, keep them for the MR pass
-        dim = max(cos_maps[0].shape[:2])
-        ramps = compute_ramps(cos_maps, feather_px=FEATHER_PX, ref_dim=4096 if dim >= 2048 else dim)
-        _cache_put(key, ramps)
+    # fingerprint the CALLING pass's textures BEFORE harmonize mutates them in place
+    tex_sig = tuple(round(float(t.sum().item()), 2) for t in textures)
+    cached = _cache_take(key)
+    ramps = cached[0] if cached is not None else None
+    ramps_ok = ramps is not None and len(ramps) == len(cos_maps)
+    if ramps_ok and cached[1] != tex_sig:
+        # true MR pass: same geometry, DIFFERENT texture content -> reuse ramps,
+        # identity harmonization (do NOT re-store; this consumes the pair)
+        pass
+    else:
+        # albedo pass (fresh key) OR repeat-albedo (key hit, IDENTICAL tex_sig =
+        # a crashed run's leftovers). Both harmonize; a same-geometry hit's ramps
+        # are still valid so reuse them, else compute. Re-store (with this pass's
+        # tex_sig) so the following true-MR call still pairs correctly.
+        if not ramps_ok:
+            dim = max(cos_maps[0].shape[:2])
+            ramps = compute_ramps(cos_maps, feather_px=FEATHER_PX,
+                                  ref_dim=4096 if dim >= 2048 else dim)
+        _cache_put(key, (ramps, tex_sig))
         textures = harmonize_views(textures, cos_maps)
     cos_maps = [c * r for c, r in zip(cos_maps, ramps)]
     texture, trust = merge(textures, cos_maps)

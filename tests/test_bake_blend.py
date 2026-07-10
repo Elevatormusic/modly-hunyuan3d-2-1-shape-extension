@@ -110,12 +110,24 @@ class TestHarmonize(unittest.TestCase):
 
     def test_recovers_injected_gain_offset(self):
         (t, c, base) = self._views()
+        t0_before = t[0].clone()                                  # harmonize now mutates t in place
+        t1_before = t[1].clone()
         out = bb.harmonize_views(t, c, anchor=0)
         ov = slice(96 // 3, 2 * 96 // 3)                          # overlap columns
-        before = float((t[0][:, ov] - t[1][:, ov]).abs().mean())
+        before = float((t0_before[:, ov] - t1_before[:, ov]).abs().mean())
         after = float((out[0][:, ov] - out[1][:, ov]).abs().mean())
         self.assertLess(after, before / 5.0)                      # >=5x agreement
-        self.assertTrue(torch.equal(out[0], t[0]))                # anchor untouched
+        self.assertTrue(torch.equal(out[0], t0_before))           # anchor untouched
+
+    def test_harmonize_mutates_in_place(self):
+        # in-place contract (VRAM fix): NO per-view clone. The SAME list and the
+        # SAME tensor objects come back, with the non-anchor view corrected in place.
+        (t, c, _) = self._views()
+        v1_before = t[1].clone()
+        out = bb.harmonize_views(t, c, anchor=0)
+        self.assertIs(out, t)                                     # same list object, not a copy
+        self.assertIs(out[1], t[1])                               # same tensor, written in place
+        self.assertFalse(torch.equal(out[1], v1_before))         # view 1 really corrected
 
     def _thin_overlap_views(self, h=96, w=96, a1=1.06, b1=-0.02, ov_cols=4):
         # A REAL thin overlap: left block [0,split), right block [split-ov_cols, w).
@@ -131,31 +143,38 @@ class TestHarmonize(unittest.TestCase):
 
     def test_thin_overlap_stays_near_identity(self):
         (t, c) = self._thin_overlap_views()
+        t0_before = t[0].clone()                                  # harmonize now mutates t in place
+        t1_before = t[1].clone()
         overlap = int(((c[0][..., 0] > 0) & (c[1][..., 0] > 0)).sum())
         self.assertGreaterEqual(overlap, 32)                      # gate not skipping the pair
         self.assertLess(overlap, 96 * 96 // 10)                   # genuinely thin (<10% of image)
         out = bb.harmonize_views(t, c, anchor=0)
-        delta = float((out[1] - t[1]).abs().max())
-        # non-vacuous: the ridge path actually ran (a skipped pair leaves out[1]==t[1]
+        delta = float((out[1] - t1_before).abs().max())
+        # non-vacuous: the ridge path actually ran (a skipped pair leaves out[1]==input
         # exactly, delta==0). Empirically delta==0.0107 at these params.
         self.assertGreater(delta, 1e-4)                           # correction is real, not skipped
         self.assertLess(delta, 0.03)                              # yet ridge keeps it near identity
-        self.assertTrue(torch.equal(out[0], t[0]))                # anchor untouched
+        self.assertTrue(torch.equal(out[0], t0_before))           # anchor untouched
 
     def test_identical_calls_are_bit_identical(self):
-        (t, c, _) = self._views()
-        out_a = bb.harmonize_views(t, c, anchor=0)
-        out_b = bb.harmonize_views(t, c, anchor=0)
-        self.assertFalse(torch.equal(out_a[1], t[1]))             # non-vacuous: a real correction
+        # two independent-but-identical input stacks (harmonize is in place now, so
+        # re-running on the same object would double-correct - use fresh copies)
+        (ta, ca, _) = self._views()
+        (tb, cb, _) = self._views()
+        ta1_before = ta[1].clone()
+        out_a = bb.harmonize_views(ta, ca, anchor=0)
+        out_b = bb.harmonize_views(tb, cb, anchor=0)
+        self.assertFalse(torch.equal(out_a[1], ta1_before))      # non-vacuous: a real correction
         for xa, xb in zip(out_a, out_b):
             self.assertTrue(torch.equal(xa, xb))                  # deterministic to the bit
 
     def test_clamps_hold_on_adversarial_input(self):
         (t, c, _) = self._views(a=(1.0, 5.0), b=(0.0, 0.4))       # wild injected distortion
+        t1_before = t[1].clone()                                  # harmonize now mutates t in place
         out = bb.harmonize_views(t, c, anchor=0)
         # correction applied to view 1 is a'*I + b' with a' in [0.5,2], |b'|<=64/255:
-        # verify output stays a bounded transform of the input
-        ratio = (out[1][c[1][..., 0] > 0] + 1e-6) / (t[1][c[1][..., 0] > 0] + 1e-6)
+        # verify output stays a bounded transform of the (pre-harmonize) input
+        ratio = (out[1][c[1][..., 0] > 0] + 1e-6) / (t1_before[c[1][..., 0] > 0] + 1e-6)
         self.assertLessEqual(float(ratio.max()), 2.6)             # 2.0 gain + offset slack
 
     def test_failure_returns_inputs(self):
@@ -221,6 +240,9 @@ class TestBakeEx(unittest.TestCase):
         self.vp = _FakeVP()
         # each 'view' arg carries the flat colors both fake views paint
         self.views = [((0.8, 0.8, 0.8), (0.4, 0.4, 0.4))] * 2
+        # MR pass: SAME cameras/geometry, DIFFERENT texture content (metallic-
+        # roughness values differ from albedo) -> distinct texture fingerprint.
+        self.mr_views = [((0.2, 0.2, 0.2), (0.6, 0.6, 0.6))] * 2
         self.elevs, self.azims, self.weights = [0, 0], [0, 180], [1.0, 0.5]
 
     def test_contract_and_frontier_smoothing(self):
@@ -238,7 +260,8 @@ class TestBakeEx(unittest.TestCase):
     def test_albedo_then_mr_pair_semantics(self):
         bb.bake_from_multiview_ex(self.vp, self.views, self.elevs, self.azims, self.weights)
         self.assertEqual(len(bb._RAMP_CACHE), 1)          # albedo stored ramps
-        bb.bake_from_multiview_ex(self.vp, self.views, self.elevs, self.azims, self.weights)
+        # MR pass: same geometry, different texture content -> takes the ramps
+        bb.bake_from_multiview_ex(self.vp, self.mr_views, self.elevs, self.azims, self.weights)
         self.assertEqual(len(bb._RAMP_CACHE), 0)          # MR took them
 
     def test_mr_not_harmonized(self):
@@ -249,9 +272,41 @@ class TestBakeEx(unittest.TestCase):
             def _boom(*a, **k):
                 raise AssertionError("harmonize called on MR pass")
             bb.harmonize_views = _boom
-            bb.bake_from_multiview_ex(self.vp, self.views, self.elevs, self.azims, self.weights)
+            # different texture content, same geometry -> recognized as MR, skips harmonize
+            bb.bake_from_multiview_ex(self.vp, self.mr_views, self.elevs, self.azims, self.weights)
         finally:
             bb.harmonize_views = orig
+
+    def test_repeat_albedo_not_flipped_to_mr(self):
+        # Residual poisoning (I2): a crash AFTER the albedo `_cache_put` but BEFORE
+        # the MR `_cache_take` leaves an entry whose key ALSO matches an identical-
+        # geometry re-run (same mesh, same cameras, same _cos_sig). The pre-fix
+        # (key hit == MR) misreads that repeat-albedo as MR: harmonization skipped
+        # and its later MR harmonized (design forbids). The stored texture
+        # fingerprint distinguishes them - IDENTICAL content => repeat-albedo
+        # (harmonize + re-store); DIFFERENT content => true MR (skip).
+        calls = {"n": 0}
+        orig = bb.harmonize_views
+
+        def _counting(*a, **k):
+            calls["n"] += 1
+            return orig(*a, **k)
+
+        try:
+            bb.harmonize_views = _counting
+            # gen 1 albedo: harmonizes + stores ramps. Crash: NO MR call follows.
+            bb.bake_from_multiview_ex(self.vp, self.views, self.elevs, self.azims, self.weights)
+            self.assertEqual(calls["n"], 1)               # gen 1 albedo harmonized
+            # repeat-albedo: IDENTICAL views + geometry (the crashed run re-run).
+            # Must be treated as albedo, NOT MR -> harmonize runs AGAIN.
+            bb.bake_from_multiview_ex(self.vp, self.views, self.elevs, self.azims, self.weights)
+            self.assertEqual(calls["n"], 2)               # BOTH albedo calls harmonized
+            # now the real MR call: SAME geometry, DIFFERENT texture content -> skips.
+            bb.bake_from_multiview_ex(self.vp, self.mr_views, self.elevs, self.azims, self.weights)
+        finally:
+            bb.harmonize_views = orig
+
+        self.assertEqual(calls["n"], 2)                   # MR pass did NOT harmonize
 
     def test_stale_entry_does_not_flip_next_albedo_to_mr(self):
         # Poisoning: gen 1's albedo call stores ramps, but its MR call never runs
