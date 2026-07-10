@@ -77,6 +77,61 @@ def read_glb_arrays(glb_path):
     )
 
 
+def attach_tangents(glb_path, tangents, w):
+    """Append the glTF TANGENT accessor (VEC4 float32, xyz + handedness w) to the
+    GLB's first primitive via pygltflib (spec RV-B: trimesh underscore-prefixes
+    custom vertex attributes, so it cannot ship a usable TANGENT).
+
+    Returns True on verified success, False on any failure; never raises. The
+    count checks run before any mutation, so a mismatch leaves the file untouched.
+    """
+    try:
+        import pygltflib
+        tan = np.asarray(tangents, np.float64).reshape(-1, 3)
+        ww = np.asarray(w, np.float64).reshape(-1)
+        if len(tan) != len(ww):
+            print("[normal_bake] tangent/w count mismatch; not attaching TANGENT")
+            return False
+        g = pygltflib.GLTF2().load(str(glb_path))
+        prim = g.meshes[0].primitives[0]
+        pos_count = g.accessors[prim.attributes.POSITION].count
+        if len(tan) != pos_count:
+            print(f"[normal_bake] tangent count {len(tan)} != POSITION count "
+                  f"{pos_count}; not attaching TANGENT")
+            return False
+        blob = g.binary_blob()
+        if len(blob) % 4:  # keep the float32 view 4-byte aligned
+            blob = blob + b"\x00" * (4 - len(blob) % 4)
+        tb = np.hstack([tan, ww[:, None]]).astype("<f4").tobytes()
+        g.set_binary_blob(blob + tb)
+        g.bufferViews.append(pygltflib.BufferView(
+            buffer=0, byteOffset=len(blob), byteLength=len(tb), target=34962))
+        g.accessors.append(pygltflib.Accessor(
+            bufferView=len(g.bufferViews) - 1, componentType=5126,
+            count=len(tan), type="VEC4"))
+        prim.attributes.TANGENT = len(g.accessors) - 1
+        g.save(str(glb_path))
+        # post-save verification: the accessor must round-trip byte-identically
+        g2 = pygltflib.GLTF2().load(str(glb_path))
+        p2 = g2.meshes[0].primitives[0]
+        if p2.attributes.TANGENT is None:
+            print("[normal_bake] TANGENT missing after save; export unverified")
+            return False
+        a2 = g2.accessors[p2.attributes.TANGENT]
+        bv2 = g2.bufferViews[a2.bufferView]
+        off = (bv2.byteOffset or 0) + (a2.byteOffset or 0)
+        got = bytes(g2.binary_blob()[off: off + a2.count * 16])
+        if a2.type != "VEC4" or a2.componentType != 5126 or got != tb:
+            print("[normal_bake] TANGENT round-trip mismatch; export unverified")
+            return False
+        return True
+    except Exception as exc:
+        import traceback
+        traceback.print_exc()
+        print(f"[normal_bake] TANGENT export failed ({exc})")
+        return False
+
+
 def rasterize_uv_atlas(verts, faces, uv, vertex_normals, size=2048):
     """Barycentric-rasterize each triangle in UV space (origin bottom-left)."""
     verts = np.asarray(verts, np.float64)
