@@ -12,6 +12,71 @@ from __future__ import annotations
 import numpy as np
 
 
+def compute_uv_tangents(positions, normals, uvs, faces):
+    """Per-vertex UV-space tangents (Lengyel) + glTF handedness w.
+    B_view = w * cross(N, T) — matches three.js/glTF exactly (spec RV-A/RV-C)."""
+    P = np.asarray(positions, float); N = np.asarray(normals, float)
+    UV = np.asarray(uvs, float); F = np.asarray(faces, int)
+    tan = np.zeros_like(P); bit = np.zeros_like(P)
+    p0, p1, p2 = P[F[:, 0]], P[F[:, 1]], P[F[:, 2]]
+    w0, w1, w2 = UV[F[:, 0]], UV[F[:, 1]], UV[F[:, 2]]
+    e1, e2 = p1 - p0, p2 - p0
+    du1, dv1 = w1[:, 0] - w0[:, 0], w1[:, 1] - w0[:, 1]
+    du2, dv2 = w2[:, 0] - w0[:, 0], w2[:, 1] - w0[:, 1]
+    det = du1 * dv2 - du2 * dv1
+    ok = np.abs(det) > 1e-12                      # degenerate UV tris contribute nothing
+    r = np.zeros_like(det); r[ok] = 1.0 / det[ok]
+    t_f = (dv2[:, None] * e1 - dv1[:, None] * e2) * r[:, None]
+    b_f = (du1[:, None] * e2 - du2[:, None] * e1) * r[:, None]
+    for c in range(3):
+        np.add.at(tan, F[:, c], np.where(ok[:, None], t_f, 0.0))
+        np.add.at(bit, F[:, c], np.where(ok[:, None], b_f, 0.0))
+    # Gram-Schmidt vs N, normalize, fallback for zero accumulation
+    T = tan - (tan * N).sum(axis=1, keepdims=True) * N
+    ln = np.linalg.norm(T, axis=1)
+    bad = ln < 1e-8
+    if bad.any():                                  # any unit vector perpendicular to N
+        ref = np.where(np.abs(N[bad, 1:2]) > 0.9, [[1.0, 0, 0]], [[0, 1.0, 0]])
+        Tf = np.cross(ref, N[bad])
+        Tf /= np.linalg.norm(Tf, axis=1, keepdims=True)
+        T[bad] = Tf; ln[bad] = 1.0
+    T = T / ln[:, None]
+    w = np.where((np.cross(N, T) * bit).sum(axis=1) < 0.0, -1.0, 1.0)
+    w[bad] = 1.0
+    return T, w
+
+
+def read_glb_arrays(glb_path):
+    """Positions/normals/uvs/faces straight from the GLB's first primitive
+    accessors (pygltflib) — the single source of truth for tangent work."""
+    import pygltflib
+    g = pygltflib.GLTF2().load(str(glb_path))
+    blob = g.binary_blob()
+    prim = g.meshes[0].primitives[0]
+
+    def acc(idx, ncomp, dtype):
+        a = g.accessors[idx]
+        bv = g.bufferViews[a.bufferView]
+        off = (bv.byteOffset or 0) + (a.byteOffset or 0)
+        out = np.frombuffer(blob, dtype=dtype,
+                            count=a.count * ncomp, offset=off)
+        return out.reshape(a.count, ncomp).astype(np.float64 if dtype != np.uint32 else np.int64)
+
+    comp = {5126: np.float32, 5125: np.uint32, 5123: np.uint16}
+    ia = g.accessors[prim.indices]
+    faces = np.frombuffer(blob, dtype=comp[ia.componentType], count=ia.count,
+                          offset=(g.bufferViews[ia.bufferView].byteOffset or 0) + (ia.byteOffset or 0)
+                          ).astype(np.int64).reshape(-1, 3)
+    if prim.attributes.NORMAL is None or prim.attributes.TEXCOORD_0 is None:
+        raise ValueError("GLB primitive lacks NORMAL or TEXCOORD_0")
+    return dict(
+        positions=acc(prim.attributes.POSITION, 3, np.float32),
+        normals=acc(prim.attributes.NORMAL, 3, np.float32),
+        uvs=acc(prim.attributes.TEXCOORD_0, 2, np.float32),
+        faces=faces,
+    )
+
+
 def rasterize_uv_atlas(verts, faces, uv, vertex_normals, size=2048):
     """Barycentric-rasterize each triangle in UV space (origin bottom-left)."""
     verts = np.asarray(verts, np.float64)
