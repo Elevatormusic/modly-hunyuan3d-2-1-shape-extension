@@ -102,3 +102,72 @@ def crease_smooth(positions, faces, uvs, *, crease_deg=45.0):
     normals = np.array([Nacc[nrow[(int(w), int(g))]] for w, g in zip(out_wid, out_g)],
                        dtype=np.float64)
     return new_positions, new_uvs, new_faces, normals
+
+
+def _verify_glb(path):
+    """True iff first primitive has NORMAL (count == POSITION), a TEXCOORD_0, and
+    at least one material — the post-export invariants."""
+    import pygltflib
+    g = pygltflib.GLTF2().load(path)
+    prim = g.meshes[0].primitives[0]
+    a = prim.attributes
+    if a.NORMAL is None or a.TEXCOORD_0 is None:
+        return False
+    if g.accessors[a.NORMAL].count != g.accessors[a.POSITION].count:
+        return False
+    return bool(g.materials)
+
+
+def apply_to_glb(glb_path, *, crease_deg=45.0):
+    """Rewrite the GLB in place with crease-aware smooth vertex normals via a
+    trimesh re-export (RV-1: writes NORMAL, carries exact normals, preserves
+    material + textures + UV + indices). Atomic + verified; never raises. Returns
+    True on verified success, False otherwise (original left byte-identical)."""
+    import os
+    import tempfile
+    try:
+        import trimesh
+        scene = trimesh.load(glb_path, process=False)
+        geoms = scene.geometry if hasattr(scene, "geometry") else None
+        names = list(geoms.keys()) if geoms is not None else []
+        if not names:
+            return False
+        touched = False
+        for name in names:
+            g = geoms[name]
+            v = getattr(g, "visual", None)
+            uv = getattr(v, "uv", None)
+            mat = getattr(v, "material", None)
+            if uv is None or mat is None:
+                continue
+            P = np.asarray(g.vertices, np.float64)
+            F = np.asarray(g.faces, np.int64)
+            UV = np.asarray(uv, np.float64)
+            newP, newUV, newF, N = crease_smooth(P, F, UV, crease_deg=crease_deg)
+            g2 = trimesh.Trimesh(vertices=newP, faces=newF, process=False)
+            g2.vertex_normals = N                          # assigned normals export verbatim (RV-1 iii)
+            g2.visual = trimesh.visual.TextureVisuals(uv=newUV, material=mat)  # REUSE original material
+            geoms[name] = g2
+            touched = True
+        if not touched:
+            return False
+        # atomic verified swap: export to temp, verify, then os.replace
+        d = os.path.dirname(os.path.abspath(glb_path))
+        fd, tmp = tempfile.mkstemp(suffix=".glb", dir=d)
+        os.close(fd)
+        try:
+            scene.export(tmp)
+            if not _verify_glb(tmp):
+                os.remove(tmp)
+                return False
+            os.replace(tmp, glb_path)
+            return True
+        except Exception:
+            try:
+                os.remove(tmp)
+            except OSError:
+                pass
+            raise
+    except Exception as exc:
+        print(f"[smooth_normals] skipped ({exc})")
+        return False

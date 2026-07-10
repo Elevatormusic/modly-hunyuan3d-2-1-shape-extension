@@ -85,5 +85,78 @@ class TestCreaseSmooth(unittest.TestCase):
         self.assertTrue(nF.max() < len(nP))
 
 
+import os
+import shutil
+import tempfile
+
+
+def _build_no_normal_glb(path):
+    """A minimal textured GLB with POSITION + TEXCOORD_0 + PBR material + image
+    and NO NORMAL accessor (trimesh omits it when vertex_normals is never
+    computed — RV-1 variant (i)). Returns the path."""
+    import trimesh
+    from trimesh.visual.material import PBRMaterial
+    from PIL import Image
+    P = np.array([[0, 0, 0], [1, 0, 0], [1, 1, 0], [0, 1, 0],
+                  [1, 0, 1], [1, 1, 1]], float)          # a 90-deg fold -> a real crease
+    F = np.array([[0, 1, 2], [0, 2, 3], [1, 4, 5], [1, 5, 2]])
+    UV = np.array([[0, 0], [1, 0], [1, 1], [0, 1], [1, 0], [1, 1]], float)
+    mesh = trimesh.Trimesh(vertices=P, faces=F, process=False)
+    img = Image.new("RGB", (8, 8), (200, 160, 40))
+    mesh.visual = trimesh.visual.TextureVisuals(
+        uv=UV, material=PBRMaterial(baseColorTexture=img, metallicFactor=0.0))
+    trimesh.Scene(mesh).export(path)                     # variant (i): no NORMAL written
+    return path
+
+
+def _first_prim_report(path):
+    import pygltflib
+    g = pygltflib.GLTF2().load(path)
+    prim = g.meshes[0].primitives[0]
+    a = prim.attributes
+    pos = g.accessors[a.POSITION].count
+    nrm = g.accessors[a.NORMAL].count if a.NORMAL is not None else None
+    return dict(normal=a.NORMAL is not None, normal_count=nrm, pos_count=pos,
+                uv=a.TEXCOORD_0 is not None, materials=len(g.materials or []),
+                images=len(g.images or []))
+
+
+class TestApplyToGlb(unittest.TestCase):
+    def setUp(self):
+        self.d = tempfile.mkdtemp()
+        self.glb = os.path.join(self.d, "m.glb")
+        _build_no_normal_glb(self.glb)
+
+    def tearDown(self):
+        shutil.rmtree(self.d, ignore_errors=True)
+
+    def test_precondition_no_normal(self):
+        self.assertFalse(_first_prim_report(self.glb)["normal"])
+
+    def test_writes_normal_preserves_material(self):
+        ok = sn.apply_to_glb(self.glb, crease_deg=45.0)
+        self.assertTrue(ok)
+        r = _first_prim_report(self.glb)
+        self.assertTrue(r["normal"])
+        self.assertEqual(r["normal_count"], r["pos_count"])   # per-vertex
+        self.assertTrue(r["uv"])
+        self.assertGreaterEqual(r["materials"], 1)
+        self.assertGreaterEqual(r["images"], 1)
+
+    def test_idempotent(self):
+        self.assertTrue(sn.apply_to_glb(self.glb))
+        self.assertTrue(sn.apply_to_glb(self.glb))            # second run still valid
+        r = _first_prim_report(self.glb)
+        self.assertTrue(r["normal"] and r["normal_count"] == r["pos_count"])
+
+    def test_malformed_returns_false_and_untouched(self):
+        bad = os.path.join(self.d, "bad.glb")
+        with open(bad, "wb") as f:
+            f.write(b"not a glb at all")
+        before = open(bad, "rb").read()
+        self.assertFalse(sn.apply_to_glb(bad))
+        self.assertEqual(open(bad, "rb").read(), before)      # byte-identical
+
+
 if __name__ == "__main__":
     unittest.main()
