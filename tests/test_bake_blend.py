@@ -185,5 +185,70 @@ class TestHarmonize(unittest.TestCase):
             self.assertTrue(torch.equal(orig, ref))              # inputs never mutated
 
 
+class _FakeRender:
+    """Two 'views': left/right halves with a small overlap; view colors differ."""
+    def __init__(self, h=64, w=64):
+        self.h, self.w = h, w
+        self.calls = 0
+
+    def back_project(self, view, elev, azim):
+        h, w = self.h, self.w
+        tex = torch.zeros(h, w, 3)
+        cos = torch.zeros(h, w, 1)
+        if azim == 0:                          # 'front': left 60%
+            tex[..., :] = torch.tensor(view[0])
+            cos[:, : int(w * 0.6), 0] = 0.9
+        else:                                  # 'back': right 60%
+            tex[..., :] = torch.tensor(view[1])
+            cos[:, int(w * 0.4):, 0] = 0.7
+        self.calls += 1
+        return tex, cos, None
+
+
+class _FakeVP:
+    def __init__(self):
+        self.render = _FakeRender()
+        self.config = type("C", (), {"bake_exp": 4})()
+
+
+class TestBakeEx(unittest.TestCase):
+    def setUp(self):
+        bb._RAMP_CACHE.clear()
+        self.vp = _FakeVP()
+        # each 'view' arg carries the flat colors both fake views paint
+        self.views = [((0.8, 0.8, 0.8), (0.4, 0.4, 0.4))] * 2
+        self.elevs, self.azims, self.weights = [0, 0], [0, 180], [1.0, 0.5]
+
+    def test_contract_and_frontier_smoothing(self):
+        tex, mask = bb.bake_from_multiview_ex(
+            self.vp, self.views, self.elevs, self.azims, self.weights)
+        self.assertEqual(tuple(tex.shape), (64, 64, 3))
+        self.assertEqual(tuple(mask.shape), (64, 64, 1))
+        self.assertTrue(bool(mask.any()))
+        # frontier: max horizontal step of the merged row must be far below the
+        # raw tone gap (0.4) - harmonize+feather smooths the handoff
+        row = tex[32, :, 0]
+        step = float((row[1:] - row[:-1]).abs().max())
+        self.assertLess(step, 0.10)
+
+    def test_albedo_then_mr_pair_semantics(self):
+        bb.bake_from_multiview_ex(self.vp, self.views, self.elevs, self.azims, self.weights)
+        self.assertEqual(len(bb._RAMP_CACHE), 1)          # albedo stored ramps
+        bb.bake_from_multiview_ex(self.vp, self.views, self.elevs, self.azims, self.weights)
+        self.assertEqual(len(bb._RAMP_CACHE), 0)          # MR took them
+
+    def test_mr_not_harmonized(self):
+        # make harmonize explode if called on the 2nd (MR) pass
+        bb.bake_from_multiview_ex(self.vp, self.views, self.elevs, self.azims, self.weights)
+        orig = bb.harmonize_views
+        try:
+            def _boom(*a, **k):
+                raise AssertionError("harmonize called on MR pass")
+            bb.harmonize_views = _boom
+            bb.bake_from_multiview_ex(self.vp, self.views, self.elevs, self.azims, self.weights)
+        finally:
+            bb.harmonize_views = orig
+
+
 if __name__ == "__main__":
     unittest.main()

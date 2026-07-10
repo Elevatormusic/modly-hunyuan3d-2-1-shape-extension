@@ -160,3 +160,26 @@ def harmonize_views(textures, cos_maps, anchor=0, lam=RIDGE_LAMBDA, cap=SAMPLE_C
         traceback.print_exc()
         print("[bake_blend] harmonize failed; using uncorrected views")
         return list(textures)
+
+
+def bake_from_multiview_ex(vp, views, camera_elevs, camera_azims, view_weights):
+    """Drop-in body for ViewProcessor.bake_from_multiview (patched call site).
+    Albedo call (first with this key): harmonize + compute & store feather
+    ramps. MR call (second, same cameras): identity harmonization, reuse ramps
+    (cos maps are geometry-only, identical between the two bakes - RV-4)."""
+    textures, cos_maps = [], []
+    for view, elev, azim, weight in zip(views, camera_elevs, camera_azims, view_weights):
+        tex, cos, _boundary = vp.render.back_project(view, elev, azim)
+        cos_maps.append(weight * (cos ** vp.config.bake_exp))
+        textures.append(tex)
+    key = (id(vp), tuple(camera_elevs), tuple(camera_azims))
+    ramps = _cache_take(key)
+    if ramps is None or len(ramps) != len(cos_maps):
+        # albedo pass: harmonize colors, compute ramps, keep them for the MR pass
+        dim = max(cos_maps[0].shape[:2])
+        ramps = compute_ramps(cos_maps, feather_px=FEATHER_PX, ref_dim=4096 if dim >= 2048 else dim)
+        _cache_put(key, ramps)
+        textures = harmonize_views(textures, cos_maps)
+    cos_maps = [c * r for c, r in zip(cos_maps, ramps)]
+    texture, trust = merge(textures, cos_maps)
+    return texture, trust > 1e-8
