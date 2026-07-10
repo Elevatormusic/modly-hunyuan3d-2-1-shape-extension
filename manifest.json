@@ -3,8 +3,8 @@
   "name": "Hunyuan3D 2.1 Shape (Full)",
   "type": "model",
   "source": "https://github.com/Elevatormusic/modly-hunyuan3d-2-1-shape-extension",
-  "description": "Full-size Hunyuan3D-2.1 (3.3B params, fp16 ckpt). High-fidelity image-to-mesh geometry with an optional PBR texture pass (shape → paint, run sequentially). The texture pass cleans the mesh (Regular / Isotropic / BPT neural), paints albedo + packed metallic-roughness, reconciles UV-seam color jumps, and writes an optional QA sheet. Shape needs ~10 GB VRAM; textures need ~21 GB plus a C++/CUDA build toolchain.",
-  "version": "1.6.0",
+  "description": "Full-size Hunyuan3D-2.1 (3.3B params, fp16 ckpt). High-fidelity image-to-mesh geometry with an optional PBR texture pass (shape → paint, run sequentially). The texture pass cleans the mesh (Regular / Isotropic / BPT neural), paints albedo + packed metallic-roughness, reconciles UV-seam color jumps, and writes an optional QA sheet. Shape needs ~10 GB VRAM; textures run in ~13 GB with the reduced-VRAM path (~20 GB full GPU), plus a C++/CUDA build toolchain.",
+  "version": "1.7.0",
   "author": "elevatormusic",
   "generator_class": "Hunyuan3DShapeV21Generator",
   "tags": ["image-to-3d", "shape", "high-fidelity"],
@@ -85,7 +85,7 @@
             { "value": 0, "label": "No (shape only)" },
             { "value": 1, "label": "Yes (paint PBR textures)" }
           ],
-          "tooltip": "Paint PBR textures after the shape. Needs ~21 GB VRAM, a big first-run download, and a C++/CUDA build toolchain. Textures are ignored by CAD/STEP export."
+          "tooltip": "Paint PBR textures after the shape. Runs in ~13 GB VRAM on the reduced path (~20 GB full GPU); Auto fits it to your card. Needs a big first-run download and a C++/CUDA build toolchain. Textures are ignored by CAD/STEP export."
         },
         {
           "id": "texture_resolution",
@@ -111,14 +111,13 @@
           "id": "texture_memory",
           "label": "Texture memory",
           "type": "select",
-          "default": "balanced",
+          "default": "auto",
           "options": [
-            { "value": "low", "label": "Low (smallest, softest)" },
-            { "value": "balanced", "label": "Balanced (recommended)" },
-            { "value": "high", "label": "High (sharpest, needs an empty GPU)" },
-            { "value": "max", "label": "Max (4096 texture; may need shared GPU memory)" }
+            { "value": "auto", "label": "Auto (recommended — picks the best fit)" },
+            { "value": "standard", "label": "Standard (~20 GB, full GPU)" },
+            { "value": "reduced", "label": "Reduced VRAM (~13 GB, ~5% slower)" }
           ],
-          "tooltip": "Caps the texture pass's VRAM so it can't spill into system RAM and crawl. Adaptive to free VRAM; this sets the ceiling — a busy GPU may drop a step lower to fit. Balanced targets a ~20 GB peak for 24 GB cards."
+          "tooltip": "How much VRAM the texture pass may use, at identical quality. Auto measures free VRAM and picks the full-GPU path (~20 GB) when it fits, else the reduced-VRAM path. Reduced runs the same quality with components staged between CPU and GPU (~13 GB, ~5% slower). 768 view resolution needs ~+14 GB (turn on Use shared GPU memory); each view above 6 adds ~+0.7 GB."
         },
         {
           "id": "use_shared_vram",
@@ -129,7 +128,7 @@
             { "value": 0, "label": "Off" },
             { "value": 1, "label": "On (borrow system RAM — much slower)" }
           ],
-          "tooltip": "Lets High/Max run when they exceed your VRAM by paging to system RAM over PCIe. Much slower (tens of minutes) and needs a large Windows page file. Leave Off unless you want maximum texture quality and don't mind the wait."
+          "tooltip": "Lets a texture run exceed your VRAM by paging to system RAM over PCIe — needed only for very high settings (e.g. 768 view resolution) on smaller cards. Much slower (tens of minutes) and needs a large Windows page file. Leave Off; Auto already fits normal runs to your card."
         },
         {
           "id": "mesh_mode",

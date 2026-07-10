@@ -179,7 +179,7 @@ class Hunyuan3DShapeV21Generator(BaseGenerator):
         max_num_view   = int(params.get("max_num_view", 6))
         mesh_mode      = str(params.get("mesh_mode", "regular"))
         bake_normal    = int(params.get("bake_normal_map", 0)) == 1
-        texture_memory = str(params.get("texture_memory", "balanced"))
+        texture_memory = str(params.get("texture_memory", "auto"))
         use_shared_vram = int(params.get("use_shared_vram", 0)) == 1
         seam_fix       = int(params.get("seam_fix", 1)) == 1
         debug_sheet    = int(params.get("debug_sheet", 0)) == 1
@@ -267,7 +267,7 @@ class Hunyuan3DShapeV21Generator(BaseGenerator):
 
         if enable_texture:
             # Shape -> Paint sequence. Free the shape model first so the paint
-            # models (~21 GB) fit alongside on a 24 GB card, then restore it.
+            # models (~13-20 GB, per the texture-memory path) fit, then restore it.
             self._report(progress_cb, 58, "Freeing VRAM for texture stage…")
             self._model = None
             if torch.cuda.is_available():
@@ -428,7 +428,7 @@ class Hunyuan3DShapeV21Generator(BaseGenerator):
         self, mesh, image, out_path: str,
         tex_resolution: int = 512, max_num_view: int = 6, progress_cb=None,
         mesh_mode: str = "isotropic", bake_normal_map: bool = False,
-        texture_memory: str = "balanced",
+        texture_memory: str = "auto",
         use_shared_vram: bool = False,
         seam_fix: bool = True,
         debug_sheet: bool = False,
@@ -1432,7 +1432,7 @@ class Hunyuan3DShapeV21Generator(BaseGenerator):
                     {"value": 0, "label": "No (shape only)"},
                     {"value": 1, "label": "Yes (paint PBR textures)"},
                 ],
-                "tooltip": "Paint PBR textures after the shape. Needs ~21 GB VRAM, a big first-run download, and a C++/CUDA build toolchain. Textures are ignored by CAD/STEP export.",
+                "tooltip": "Paint PBR textures after the shape. Runs in ~13 GB VRAM on the reduced path (~20 GB full GPU); Auto fits it to your card. Needs a big first-run download and a C++/CUDA build toolchain. Textures are ignored by CAD/STEP export.",
             },
             {
                 "id": "texture_resolution",
@@ -1458,14 +1458,13 @@ class Hunyuan3DShapeV21Generator(BaseGenerator):
                 "id": "texture_memory",
                 "label": "Texture memory",
                 "type": "select",
-                "default": "balanced",
+                "default": "auto",
                 "options": [
-                    {"value": "low", "label": "Low (smallest, softest)"},
-                    {"value": "balanced", "label": "Balanced (recommended)"},
-                    {"value": "high", "label": "High (sharpest, needs an empty GPU)"},
-                    {"value": "max", "label": "Max (4096 texture; may need shared GPU memory)"},
+                    {"value": "auto", "label": "Auto (recommended — picks the best fit)"},
+                    {"value": "standard", "label": "Standard (~20 GB, full GPU)"},
+                    {"value": "reduced", "label": "Reduced VRAM (~13 GB, ~5% slower)"},
                 ],
-                "tooltip": "Caps the texture pass's VRAM so it can't spill into system RAM and crawl. Adaptive to free VRAM; this sets the ceiling — a busy GPU may drop a step lower to fit. Balanced targets a ~20 GB peak for 24 GB cards.",
+                "tooltip": "How much VRAM the texture pass may use, at identical quality. Auto measures free VRAM and picks the full-GPU path (~20 GB) when it fits, else the reduced-VRAM path. Reduced runs the same quality with components staged between CPU and GPU (~13 GB, ~5% slower). 768 view resolution needs ~+14 GB (turn on Use shared GPU memory); each view above 6 adds ~+0.7 GB.",
             },
             {
                 "id": "use_shared_vram",
@@ -1476,7 +1475,7 @@ class Hunyuan3DShapeV21Generator(BaseGenerator):
                     {"value": 0, "label": "Off"},
                     {"value": 1, "label": "On (borrow system RAM — much slower)"},
                 ],
-                "tooltip": "Lets High/Max run when they exceed your VRAM by paging to system RAM over PCIe. Much slower (tens of minutes) and needs a large Windows page file. Leave Off unless you want maximum texture quality and don't mind the wait.",
+                "tooltip": "Lets a texture run exceed your VRAM by paging to system RAM over PCIe — needed only for very high settings (e.g. 768 view resolution) on smaller cards. Much slower (tens of minutes) and needs a large Windows page file. Leave Off; Auto already fits normal runs to your card.",
             },
             {
                 "id": "mesh_mode",

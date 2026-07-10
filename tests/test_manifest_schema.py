@@ -44,9 +44,30 @@ class TestManifestSchemaLockstep(unittest.TestCase):
         from generator import Hunyuan3DShapeV21Generator as G
         return {p["id"]: p for p in G.params_schema()}
 
-    def test_version_1_6_0(self):
+    def test_version_1_7_0(self):
         man, _ = self._manifest()
-        self.assertEqual(man["version"], "1.6.0")
+        self.assertEqual(man["version"], "1.7.0")
+
+    def test_texture_memory_default_auto_both_sides(self):
+        _, mp = self._manifest()
+        sp = self._schema()
+        self.assertEqual(mp["texture_memory"]["default"], "auto")
+        self.assertEqual(sp["texture_memory"]["default"], "auto")
+
+    def test_texture_memory_option_ids_identical(self):
+        _, mp = self._manifest()
+        sp = self._schema()
+        mvals = {o["value"] for o in mp["texture_memory"]["options"]}
+        svals = {o["value"] for o in sp["texture_memory"]["options"]}
+        self.assertEqual(mvals, {"auto", "standard", "reduced"})
+        self.assertEqual(mvals, svals)
+
+    def test_texture_memory_labels_identical(self):
+        _, mp = self._manifest()
+        sp = self._schema()
+        mlabels = {o["value"]: o["label"] for o in mp["texture_memory"]["options"]}
+        slabels = {o["value"]: o["label"] for o in sp["texture_memory"]["options"]}
+        self.assertEqual(mlabels, slabels)
 
     def test_bake_default_off_both_sides(self):
         _, mp = self._manifest()
