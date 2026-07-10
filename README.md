@@ -77,6 +77,8 @@ A prompt like *"product render on a white background, 3/4 view, soft even lighti
 
 ## &#128190; Will it run on my GPU?
 
+> **NVIDIA (CUDA) only for textures.** The paint pipeline runs CUDA-compiled code, so texturing needs an NVIDIA GPU — AMD cards aren't supported, and on Apple Silicon only the shape stage runs (slowly, untested). Everything below assumes NVIDIA.
+
 Find your card — quality is **identical** on every row; **Auto** picks the right mode for you at generation time:
 
 | Your GPU | Shape | Textures |
@@ -221,7 +223,7 @@ And because **Auto** measures free VRAM at generation time and picks the full-GP
 
 - NVIDIA GPU with **&#8805; 10 GB VRAM** for shape (an RTX 3090 / 24 GB is comfortable; the texture pass runs in ~13 GB on the reduced-VRAM path — fits 16 GB cards — or ~20 GB full GPU).
 - ~10 GB free disk for weights + source (more for the texture downloads).
-- Windows or Linux (CUDA). macOS/MPS falls back to fp32 and is slow / untested for the full model.
+- **NVIDIA GPU (CUDA) required** — textures are CUDA-only (AMD not supported). Windows or Linux. macOS/Apple Silicon: shape stage only, fp32, slow / untested.
 
 |  | Mini | This (2.1 Full) |
 |---|---|---|
