@@ -236,4 +236,16 @@ And because **Auto** measures free VRAM at generation time and picks the full-GP
 
 Model weights are under Tencent's `tencent-hunyuan-community` license — review it before commercial use.
 
+### License &amp; attribution
+
+The paint pass builds on the Tencent Hunyuan 3D 2.1 Works, and this repository
+redistributes prebuilt binaries compiled from lightly modified copies of them.
+The full license text is in [`LICENSE`](LICENSE) and the required attribution,
+the list of modified files, and the pass-through use restrictions are in
+[`NOTICE`](NOTICE). Use of the model and of the prebuilt binaries in
+[`prebuilt/`](prebuilt/) stays subject to the Tencent Hunyuan 3D 2.1 Community
+License Agreement and its Acceptable Use Policy — including the territorial
+scope (the license does not apply in the EU, UK, or South Korea) and the
+prohibited-uses list.
+
 <div align="center"><sub>A community extension for <a href="https://github.com/lightningpixel/modly">Modly</a>. Not affiliated with Tencent or lightningpixel.</sub></div>
