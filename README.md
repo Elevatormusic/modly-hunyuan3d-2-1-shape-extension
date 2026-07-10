@@ -55,7 +55,7 @@ Wraps the full **Hunyuan3D-2.1** shape checkpoint (Tencent's 3.3B `hunyuan3d-dit
 - **PBR texture pass** — albedo + packed metallic-roughness, painted from 6–9 camera views.
 - **Seam-fix** — reconciles color jumps across UV-island edges so textures don't show hard seams (on by default).
 - **Mesh cleanup** — Regular / Isotropic / BPT neural retopology, with automatic fallbacks.
-- **CAD / print path** — optional decimation plus STEP / Fusion export (textures are dropped for solid CAD).
+- **CAD / print friendly** — optional decimation produces a mesh that converts cleanly downstream (e.g. Fusion 360's Convert Mesh, or a mesh-to-STEP tool).
 - **QA sheet** — an optional one-image diagnostic of every texture map (see the deep dive below).
 
 ---
@@ -65,7 +65,7 @@ Wraps the full **Hunyuan3D-2.1** shape checkpoint (Tencent's 3.3B `hunyuan3d-dit
 **Short answer: yes.**
 
 - **Shape** generates on **~10 GB VRAM** with no build tools — comfortable on most modern NVIDIA cards.
-- **Textures** are happiest on a **24 GB card** (~21 GB peak), **but you don't need one.** The **Texture memory** tiers scale the pass down to fit your card, and **Use shared GPU memory** lets a smaller GPU finish by borrowing system RAM. It's slower over PCIe, but a 12 GB card can still paint — it just takes longer.
+- **Textures** are happiest on a **24 GB card** (~22 GB peak), **but you don't need one.** The **Texture memory** tiers scale the pass down to fit your card, and **Use shared GPU memory** lets a smaller GPU finish by borrowing system RAM. It's slower over PCIe, but a 12 GB card can still paint — it just takes longer.
 
 <sub>The texture pass also needs a one-time C++/CUDA build toolchain (Visual Studio C++ Build Tools + a CUDA toolkit). Shape generation needs none, and if the toolchain is missing, texturing fails with a clear message while shape keeps working.</sub>
 
@@ -176,7 +176,7 @@ The cap is adaptive: on a busy GPU the pass steps down a tier to fit. **Use shar
 
 <br>
 
-- NVIDIA GPU with **&#8805; 10 GB VRAM** for shape (an RTX 3090 / 24 GB is comfortable; the texture pass wants ~21 GB or the shared-RAM path).
+- NVIDIA GPU with **&#8805; 10 GB VRAM** for shape (an RTX 3090 / 24 GB is comfortable; the texture pass wants ~22 GB or the shared-RAM path).
 - ~10 GB free disk for weights + source (more for the texture downloads).
 - Windows or Linux (CUDA). macOS/MPS falls back to fp32 and is slow / untested for the full model.
 
