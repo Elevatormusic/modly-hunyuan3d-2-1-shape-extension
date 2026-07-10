@@ -137,12 +137,11 @@ The paint pass produces a standard glTF PBR set — **albedo** (base color) and 
 
 **Texture memory** caps the paint pass's VRAM so it can't silently spill into system RAM and crawl:
 
-- **Low** — smallest / softest.
-- **Balanced** (default) — targets a ~20 GB peak on 24 GB cards.
-- **High** — sharpest; wants an otherwise-empty GPU.
-- **Max** — 4096 texture; may need shared GPU memory.
+- **Low** — reduced fallback for tight VRAM (softer textures).
+- **Balanced** (default) — full stock quality (2048 render / 4096 texture), ~20 GB peak on 24 GB cards.
+- **High / Max** — currently identical to Balanced (stock is already the quality ceiling); a redesign tying each tier to a measured VRAM budget is in progress.
 
-The cap is adaptive: on a busy GPU the pass steps down a tier to fit. **Use shared GPU memory** lets High / Max run past your VRAM by paging to system RAM over PCIe — slower, and it wants a large Windows page file.
+The cap is adaptive: on a busy GPU the pass steps down a tier to fit. **Use shared GPU memory** lets a run exceed your VRAM by paging to system RAM over PCIe — slower, and it wants a large Windows page file.
 
 </details>
 
@@ -163,7 +162,7 @@ The cap is adaptive: on a busy GPU the pass steps down a tier to fit. **Use shar
 - **Texture view resolution** — 512 / 768 per-view render size
 - **Texture views** — camera views painted / baked (6–9)
 - **Texture memory** — VRAM ceiling (Low / Balanced / High / Max)
-- **Use shared GPU memory** — allow High / Max to page into system RAM
+- **Use shared GPU memory** — let a run page into system RAM when it exceeds VRAM
 - **Mesh cleanup** — Regular (default) / Isotropic / BPT neural
 - **Bake normal map** — experimental, off by default
 - **Fix texture seams** — reconcile UV-seam color jumps (on by default)
