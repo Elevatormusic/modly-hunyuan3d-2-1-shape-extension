@@ -54,12 +54,12 @@ class TestParams(unittest.TestCase):
         # Pre-existing CAD/print decimation param must not be clobbered.
         self.assertIn("target_faces", self._schema())
 
-    def test_texture_memory_present_default_balanced(self):
+    def test_texture_memory_present_default_auto(self):
         schema = self._schema()
         self.assertIn("texture_memory", schema)
-        self.assertEqual(schema["texture_memory"]["default"], "balanced")
+        self.assertEqual(schema["texture_memory"]["default"], "auto")
         values = {o["value"] for o in schema["texture_memory"]["options"]}
-        self.assertEqual(values, {"low", "balanced", "high", "max"})
+        self.assertEqual(values, {"auto", "standard", "reduced"})
 
     def test_low_vram_mode_removed(self):
         # low_vram_mode (broken CPU offload) was removed in favor of use_shared_vram.
@@ -81,11 +81,14 @@ class TestParams(unittest.TestCase):
         params = inspect.signature(G._run_texture).parameters
         self.assertIn("texture_memory", params)
         self.assertNotIn("low_vram_mode", params)
-        self.assertEqual(params["texture_memory"].default, "balanced")
+        self.assertEqual(params["texture_memory"].default, "auto")
 
-    def test_texture_memory_has_max_option(self):
+    def test_texture_memory_has_reduced_option(self):
         values = {o["value"] for o in self._schema()["texture_memory"]["options"]}
-        self.assertIn("max", values)
+        self.assertIn("reduced", values)
+        # retired legacy ids no longer offered in the manifest/schema
+        self.assertNotIn("max", values)
+        self.assertNotIn("balanced", values)
 
     def test_use_shared_vram_present_default_off(self):
         schema = self._schema()
@@ -99,7 +102,7 @@ class TestParams(unittest.TestCase):
         self.assertIn("use_shared_vram", mparams)
         self.assertEqual(mparams["use_shared_vram"]["default"], 0)
         mvals = {o["value"] for o in mparams["texture_memory"]["options"]}
-        self.assertIn("max", mvals)
+        self.assertEqual(mvals, {"auto", "standard", "reduced"})
 
     def test_run_texture_accepts_use_shared_vram(self):
         _install_services_stub()

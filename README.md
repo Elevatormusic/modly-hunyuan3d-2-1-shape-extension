@@ -3,11 +3,11 @@
 <img src="assets/banner.png" alt="Hunyuan3D 2.1 Full - Modly extension" width="100%">
 
 <p>
-  <a href="https://github.com/Elevatormusic/modly-hunyuan3d-2-1-shape-extension"><img src="https://img.shields.io/badge/version-1.6.0-982598" alt="version"></a>
+  <a href="https://github.com/Elevatormusic/modly-hunyuan3d-2-1-shape-extension"><img src="https://img.shields.io/badge/version-1.7.0-982598" alt="version"></a>
   <img src="https://img.shields.io/badge/Modly-model_extension-15173D" alt="Modly model extension">
   <img src="https://img.shields.io/badge/Windows_%C2%B7_Linux-CUDA-15173D" alt="platform">
   <img src="https://img.shields.io/badge/shape-~10_GB_VRAM-982598" alt="shape vram">
-  <img src="https://img.shields.io/badge/textures-optional_PBR-E491C9" alt="textures">
+  <img src="https://img.shields.io/badge/textures-~13_GB_reduced-E491C9" alt="textures vram">
 </p>
 
 **Turn a single image into a high-fidelity 3D model — with optional PBR textures — right inside [Modly](https://github.com/lightningpixel/modly).**
@@ -47,6 +47,19 @@ Wraps the full **Hunyuan3D-2.1** shape checkpoint (Tencent's 3.3B `hunyuan3d-dit
 
 > **Just want the shape?** It needs only ~10 GB VRAM and no build tools — leave textures off and you're done in under a minute on a modern card.
 
+### &#128444;&#65039; No image? Start from text
+
+Have an idea but no picture? Generate one first: describe your object in **ChatGPT (GPT Image 2.0)** — or any capable text-to-image model — then drop the result into this extension.
+
+A few things make a generated image work well for image&#8594;3D:
+
+- **One object, centered**, on a plain white or neutral background.
+- **A 3/4 view** that shows depth — not a dead-on front shot.
+- **Even lighting, no harsh shadows.**
+- **The whole object in frame** — nothing cropped at the edges.
+
+A prompt like *"product render on a white background, 3/4 view, soft even lighting"* works well. One honest note: busy photo backgrounds can confuse the mesh. The extension removes backgrounds automatically, but a clean source image gives the best geometry.
+
 ---
 
 ## &#129513; What's inside
@@ -62,10 +75,15 @@ Wraps the full **Hunyuan3D-2.1** shape checkpoint (Tencent's 3.3B `hunyuan3d-dit
 
 ## &#128190; Will it run on my GPU?
 
-**Short answer: yes.**
+**Short answer: textures fit 16 GB cards, and a 12 GB card works too.**
 
 - **Shape** generates on **~10 GB VRAM** with no build tools — comfortable on most modern NVIDIA cards.
-- **Textures** are happiest on a **24 GB card** (~22 GB peak), **but you don't need one.** The **Texture memory** tiers scale the pass down to fit your card, and **Use shared GPU memory** lets a smaller GPU finish by borrowing system RAM. It's slower over PCIe, but a 12 GB card can still paint — it just takes longer.
+- **Textures** paint at full stock quality either way; the only question is how much VRAM they use. **Texture memory** defaults to **Auto**, which measures your free VRAM at generation time and picks:
+  - **Standard (full GPU)** — **~20 GB** peak, when it fits.
+  - **Reduced VRAM** — **~13 GB** peak at the *same* quality, staging components between CPU and GPU (~5% slower). This is what lets textures **fit a 16 GB card**.
+- **12 GB cards** work too — the reduced path peaks ~1 GB over 12 GB, so it spills that ~1 GB to shared system memory and finishes a touch slower.
+
+<sub>Measured on an RTX 3090 (512 view resolution, 6 views): 20.4 GB full-GPU vs 13.0 GB reduced, quality identical. Higher settings cost more — 768 view resolution adds ~14 GB (turn on **Use shared GPU memory**), and each view above 6 adds ~0.7 GB.</sub>
 
 <sub>The texture pass also needs a one-time C++/CUDA build toolchain (Visual Studio C++ Build Tools + a CUDA toolkit). Shape generation needs none, and if the toolchain is missing, texturing fails with a clear message while shape keeps working.</sub>
 
@@ -135,13 +153,34 @@ The paint pass produces a standard glTF PBR set — **albedo** (base color) and 
 
 <br>
 
-**Texture memory** caps the paint pass's VRAM so it can't silently spill into system RAM and crawl:
+**Texture memory** decides how much VRAM the paint pass may use. Every option paints at the same full stock quality (2048 render / 4096 texture) — the difference is only *where* idle model components wait:
 
-- **Low** — reduced fallback for tight VRAM (softer textures).
-- **Balanced** (default) — full stock quality (2048 render / 4096 texture), ~20 GB peak on 24 GB cards.
-- **High / Max** — currently identical to Balanced (stock is already the quality ceiling); a redesign tying each tier to a measured VRAM budget is in progress.
+- **Auto** (default) — measures free VRAM at generation time and picks Standard when it fits, else Reduced. You generally never need to touch this.
+- **Standard (~20 GB, full GPU)** — everything resident on the GPU; the fastest path when you have the headroom.
+- **Reduced VRAM (~13 GB, ~5% slower)** — stages components between CPU and GPU at stage boundaries, so the same run fits a 16 GB card (and a 12 GB card with ~1 GB spill). Same weights, same math, same output.
 
-The cap is adaptive: on a busy GPU the pass steps down a tier to fit. **Use shared GPU memory** lets a run exceed your VRAM by paging to system RAM over PCIe — slower, and it wants a large Windows page file.
+Measured on an RTX 3090 (512/6 views): 20.4 GB reserved full-GPU vs 13.0 GB reduced, view-space difference 2.24/255 (run-to-run noise).
+
+**Use shared GPU memory** lets a run exceed your VRAM by paging to system RAM over PCIe — needed only for very high settings (e.g. 768 view resolution, which adds ~14 GB) on smaller cards. It's much slower and wants a large Windows page file.
+
+</details>
+
+<details>
+<summary><b>&#9881;&#65039; How Reduced VRAM works</b></summary>
+
+<br>
+
+The paint pass runs in distinct stages — encode the condition images, run the multiview diffusion, decode, then upscale and bake — and each stage only needs *some* of the models on the GPU at once.
+
+**Reduced VRAM stages components** between CPU and GPU at those boundaries. The vision encoder (DINO) visits the GPU once for its single forward pass; the VAE only for the encode and decode; the big diffusion model only during the denoising loop. Idle weights wait in ordinary system RAM instead of holding VRAM.
+
+**Why the quality is identical:** the exact same weights run the exact same math — the only thing that changes is where idle components wait. It's verified side-by-side against the full-GPU path (view-space difference within run-to-run noise).
+
+**What it costs:** peak VRAM drops from ~20.4 GB to ~13.0 GB, for roughly 4–5% more time on a PCIe 4 system — a one-time transfer per stage, not per step.
+
+We don't use the standard-library offload for this: the pipeline's custom dual-stream architecture bypasses hook-based offloading, so the extension stages whole components at stage boundaries instead — simpler and more robust for this model.
+
+And because **Auto** measures free VRAM at generation time and picks the full-GPU path when it fits or the reduced path when it doesn't, you generally never have to think about any of this.
 
 </details>
 
@@ -161,8 +200,8 @@ The cap is adaptive: on a busy GPU the pass steps down a tier to fit. **Use shar
 - **Generate textures (PBR)** — enable the paint pass
 - **Texture view resolution** — 512 / 768 per-view render size
 - **Texture views** — camera views painted / baked (6–9)
-- **Texture memory** — VRAM ceiling (Low / Balanced / High / Max)
-- **Use shared GPU memory** — let a run page into system RAM when it exceeds VRAM
+- **Texture memory** — VRAM path at identical quality: Auto (default) / Standard (~20 GB, full GPU) / Reduced VRAM (~13 GB, ~5% slower)
+- **Use shared GPU memory** — let a run page into system RAM when it exceeds VRAM (only needed for very high settings)
 - **Mesh cleanup** — Regular (default) / Isotropic / BPT neural
 - **Bake normal map** — experimental, off by default
 - **Fix texture seams** — reconcile UV-seam color jumps (on by default)
@@ -175,7 +214,7 @@ The cap is adaptive: on a busy GPU the pass steps down a tier to fit. **Use shar
 
 <br>
 
-- NVIDIA GPU with **&#8805; 10 GB VRAM** for shape (an RTX 3090 / 24 GB is comfortable; the texture pass wants ~22 GB or the shared-RAM path).
+- NVIDIA GPU with **&#8805; 10 GB VRAM** for shape (an RTX 3090 / 24 GB is comfortable; the texture pass runs in ~13 GB on the reduced-VRAM path — fits 16 GB cards — or ~20 GB full GPU).
 - ~10 GB free disk for weights + source (more for the texture downloads).
 - Windows or Linux (CUDA). macOS/MPS falls back to fp32 and is slow / untested for the full model.
 

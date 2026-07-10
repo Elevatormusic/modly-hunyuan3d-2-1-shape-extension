@@ -179,7 +179,7 @@ class Hunyuan3DShapeV21Generator(BaseGenerator):
         max_num_view   = int(params.get("max_num_view", 6))
         mesh_mode      = str(params.get("mesh_mode", "regular"))
         bake_normal    = int(params.get("bake_normal_map", 0)) == 1
-        texture_memory = str(params.get("texture_memory", "balanced"))
+        texture_memory = str(params.get("texture_memory", "auto"))
         use_shared_vram = int(params.get("use_shared_vram", 0)) == 1
         seam_fix       = int(params.get("seam_fix", 1)) == 1
         debug_sheet    = int(params.get("debug_sheet", 0)) == 1
@@ -267,7 +267,7 @@ class Hunyuan3DShapeV21Generator(BaseGenerator):
 
         if enable_texture:
             # Shape -> Paint sequence. Free the shape model first so the paint
-            # models (~21 GB) fit alongside on a 24 GB card, then restore it.
+            # models (~13-20 GB, per the texture-memory path) fit, then restore it.
             self._report(progress_cb, 58, "Freeing VRAM for texture stage…")
             self._model = None
             if torch.cuda.is_available():
@@ -428,7 +428,7 @@ class Hunyuan3DShapeV21Generator(BaseGenerator):
         self, mesh, image, out_path: str,
         tex_resolution: int = 512, max_num_view: int = 6, progress_cb=None,
         mesh_mode: str = "isotropic", bake_normal_map: bool = False,
-        texture_memory: str = "balanced",
+        texture_memory: str = "auto",
         use_shared_vram: bool = False,
         seam_fix: bool = True,
         debug_sheet: bool = False,
@@ -495,10 +495,18 @@ class Hunyuan3DShapeV21Generator(BaseGenerator):
                 float("inf"), texture_memory, extra_budget_gb=_extra_budget)
         capacity.apply_texture_plan(conf, _plan)
         os.environ["EB_SR_CHUNK"] = str(_plan.sr_chunk)   # read by eb_accel.super_resolve_batch
+        # Reduced-VRAM path: env-gate the hook-free "phase" component staging (patched into
+        # the vendored paint source by _patch_gpu_accel section 8). MUST be set before the
+        # paint pipeline is constructed below. Default off = byte-identical stock behavior.
+        if _plan.offload:
+            os.environ["EB_CPU_OFFLOAD"] = "phase"
+        else:
+            os.environ.pop("EB_CPU_OFFLOAD", None)
         if _plan.warning:
             print(f"[{self.MODEL_ID}] VRAM: {_plan.warning}")
             self._report(progress_cb, 62, _plan.warning)
         print(f"[{self.MODEL_ID}] texture_memory tier={_plan.tier} "
+              f"offload={'on' if _plan.offload else 'off'} "
               f"render={_plan.render_size} texture={_plan.texture_size} sr_chunk={_plan.sr_chunk} "
               f"shared_budget={_extra_budget:.0f}GB")
 
@@ -654,6 +662,15 @@ class Hunyuan3DShapeV21Generator(BaseGenerator):
         is guarded by a marker so a re-download re-applies cleanly and a running
         install is never double-patched."""
         import shutil
+
+        # 8. Hook-free "phase" CPU offload (the reduced-VRAM path) — applied FIRST,
+        # before the eb_accel early-returns below, because it does not depend on
+        # eb_accel and _run_texture may set EB_CPU_OFFLOAD=phase; if this patch were
+        # skipped (eb_accel missing/copy failure) the env would target unpatched
+        # files and a small card would silently run full-GPU (OOM risk).
+        # Env-gated (set per-run in _run_texture); default off = stock behavior.
+        # Idempotent + a no-op on the already-patched live vendored files.
+        self._patch_phase_offload(paint_src)
 
         helper = Path(__file__).resolve().parent / "eb_accel.py"
         if not helper.exists():
@@ -878,6 +895,180 @@ class Hunyuan3DShapeV21Generator(BaseGenerator):
                     '        self.render.save_mesh(output_mesh_path', 1)
                 tgp.write_text(text, encoding="utf-8")
                 print(f"[{self.MODEL_ID}] patched paint-stage progress milestones into textureGenPipeline.py")
+
+    @staticmethod
+    def _patch_phase_offload(paint_src: Path) -> None:
+        """Section 8: reproduce the hook-free EB_CPU_OFFLOAD=phase edits onto a freshly
+        downloaded _hy3dpaint_src (utils/multiview_utils.py + hunyuanpaintpbr/pipeline.py).
+
+        Every edit is guarded by a MARKER string that is already present in the
+        hand-patched live vendored files, so re-running the patch on them is a no-op; and
+        anchored on a stable UPSTREAM (pristine) line, so it reproduces the phase edits on a
+        clean download. Only the "phase" branch is productionized (the spike's extra
+        "1"/"model"/"seq" branches stay in the live file but the durable patch never
+        depends on them). Whole components move at stage boundaries — no accelerate hooks,
+        which this custom dual-stream pipeline bypasses. Never raises."""
+
+        # --- utils/multiview_utils.py -----------------------------------------------
+        mu = paint_src / "utils" / "multiview_utils.py"
+        if mu.exists():
+            text = mu.read_text(encoding="utf-8")
+            changed = False
+
+            # 8a. Offload branch in multiviewDiffusionNet.__init__: in phase mode pin the
+            # pipeline's _execution_device to the config device and keep the pipe on CPU.
+            old_8a = (
+                '        setattr(pipeline, "view_size", cfg.model.params.get("view_size", 320))\n'
+                '        self.pipeline = pipeline.to(self.device)')
+            new_8a = (
+                '        setattr(pipeline, "view_size", cfg.model.params.get("view_size", 320))\n'
+                '        # EB phase CPU offload (env-gated EB_CPU_OFFLOAD=phase, default OFF): hook-free\n'
+                '        # offload so tight-VRAM cards paint at full quality. This custom pipeline calls\n'
+                '        # submodules directly and feeds module attributes as tensors, which breaks BOTH\n'
+                '        # accelerate offload modes -> whole components move at stage boundaries instead.\n'
+                '        # Modules start on CPU; device introspection is pinned to the execution device.\n'
+                '        if os.environ.get("EB_CPU_OFFLOAD", "") == "phase":\n'
+                '            try:\n'
+                '                _eb_dev = torch.device(self.device)\n'
+                '                type(pipeline)._execution_device = property(lambda s, _d=_eb_dev: _d)\n'
+                '                self.pipeline = pipeline  # stays on CPU; components phase in per stage\n'
+                '                print("[eb_accel] paint diffusion: PHASE CPU offload ENABLED")\n'
+                '            except Exception as exc:\n'
+                '                print(f"[eb_accel] phase offload failed ({exc!r}); using full-GPU path")\n'
+                '                self.pipeline = pipeline.to(self.device)\n'
+                '        else:\n'
+                '            self.pipeline = pipeline.to(self.device)')
+            if "PHASE CPU offload ENABLED" not in text and old_8a in text:
+                text = text.replace(old_8a, new_8a, 1)
+                changed = True
+
+            # 8b. DINO-giant to CPU at init in phase mode (phased onto GPU only for its forward).
+            old_8b = (
+                '            self.dino_v2 = Dino_v2(config.dino_ckpt_path).to(torch.float16)\n'
+                '            self.dino_v2 = self.dino_v2.to(self.device)')
+            new_8b = (
+                '            self.dino_v2 = Dino_v2(config.dino_ckpt_path).to(torch.float16)\n'
+                '            if os.environ.get("EB_CPU_OFFLOAD", "") == "phase":\n'
+                '                self.dino_v2 = self.dino_v2.to("cpu")  # phased onto GPU only for its forward\n'
+                '            else:\n'
+                '                self.dino_v2 = self.dino_v2.to(self.device)')
+            if 'self.dino_v2 = self.dino_v2.to("cpu")' not in text and old_8b in text:
+                text = text.replace(old_8b, new_8b, 1)
+                changed = True
+
+            # 8c. generator device fix in forward_one: use the pinned execution device
+            # (modules sit on CPU under phase offload, so .device is a non-accelerator).
+            old_8c = (
+                '        kwargs = dict(generator=torch.Generator(device=self.pipeline.device).manual_seed(0))')
+            new_8c = (
+                '        # Under phase offload the pipeline sits on CPU, so .device is a non-accelerator;\n'
+                '        # _execution_device is the pinned execution device (== .device on the stock path).\n'
+                '        _eb_dev = getattr(self.pipeline, "_execution_device", None) or self.pipeline.device\n'
+                '        kwargs = dict(generator=torch.Generator(device=_eb_dev).manual_seed(0))')
+            if "_eb_dev = getattr(self.pipeline" not in text and old_8c in text:
+                text = text.replace(old_8c, new_8c, 1)
+                changed = True
+
+            # 8d. DINO phasing in forward_one: onto GPU for its single forward, back to CPU
+            # (+ empty_cache) after.
+            old_8d = (
+                '        if hasattr(self.pipeline.unet, "use_dino") and self.pipeline.unet.use_dino:\n'
+                '            dino_hidden_states = self.dino_v2(input_images[0])\n'
+                '            kwargs["dino_hidden_states"] = dino_hidden_states')
+            new_8d = (
+                '        if hasattr(self.pipeline.unet, "use_dino") and self.pipeline.unet.use_dino:\n'
+                '            _eb_ph = os.environ.get("EB_CPU_OFFLOAD", "") == "phase"\n'
+                '            if _eb_ph:\n'
+                '                self.dino_v2 = self.dino_v2.to(_eb_dev)\n'
+                '            dino_hidden_states = self.dino_v2(input_images[0])\n'
+                '            if _eb_ph:\n'
+                '                self.dino_v2 = self.dino_v2.to("cpu")\n'
+                '                torch.cuda.empty_cache()\n'
+                '            kwargs["dino_hidden_states"] = dino_hidden_states')
+            if "_eb_ph = os.environ.get" not in text and old_8d in text:
+                text = text.replace(old_8d, new_8d, 1)
+                changed = True
+
+            if changed:
+                mu.write_text(text, encoding="utf-8")
+                print(f"[{__name__}] patched phase offload into multiview_utils.py")
+
+        # --- hunyuanpaintpbr/pipeline.py --------------------------------------------
+        pp = paint_src / "hunyuanpaintpbr" / "pipeline.py"
+        if pp.exists():
+            text = pp.read_text(encoding="utf-8")
+            changed = False
+
+            # 8e. Module-level _eb_phase_to() helper (no-op unless phase env; never raises).
+            helper = (
+                'def _eb_phase_to(module, device):\n'
+                '    """Phase-offload helper (EB_CPU_OFFLOAD=phase): move a whole component between\n'
+                '    CPU and the execution device at stage boundaries. Hook-free by design — this\n'
+                '    pipeline calls submodules directly and feeds module attributes (learned tokens)\n'
+                '    as tensors, which breaks BOTH of accelerate\'s offload modes. No-op unless the\n'
+                '    phase env var is set; never raises."""\n'
+                '    import os\n'
+                '    if os.environ.get("EB_CPU_OFFLOAD") != "phase":\n'
+                '        return\n'
+                '    try:\n'
+                '        module.to(device)\n'
+                '        if str(device) == "cpu":\n'
+                '            torch.cuda.empty_cache()\n'
+                '    except Exception as exc:\n'
+                '        print(f"[eb_accel] phase move failed ({exc!r})")\n'
+                '\n'
+                '\n'
+                'class HunyuanPaintPipeline(StableDiffusionPipeline):')
+            if "def _eb_phase_to(" not in text and "class HunyuanPaintPipeline(StableDiffusionPipeline):" in text:
+                text = text.replace(
+                    "class HunyuanPaintPipeline(StableDiffusionPipeline):", helper, 1)
+                changed = True
+
+            # 8f. Before the condition encodes: VAE onto GPU + device fix (was self.vae.device).
+            old_8f = (
+                '        images_vae = images_vae.to(device=self.vae.device, dtype=self.unet.dtype)')
+            new_8f = (
+                '        # vae.device is meta under CPU offload; _execution_device is the execution\n'
+                '        # device (identical to vae.device on the stock full-GPU path).\n'
+                '        _eb_dev = getattr(self, "_execution_device", None) or self.vae.device\n'
+                '        _eb_phase_to(self.vae, _eb_dev)  # phase: VAE on GPU for the condition encodes\n'
+                '        images_vae = images_vae.to(device=_eb_dev, dtype=self.unet.dtype)')
+            if "_eb_phase_to(self.vae, _eb_dev)" not in text and old_8f in text:
+                text = text.replace(old_8f, new_8f, 1)
+                changed = True
+
+            # 8g. Before the learned-token block: VAE -> cpu, UNet (wrapper) -> device.
+            # MUST precede the learned-token reads so they come back on-device.
+            old_8g = '        if self.unet.use_learned_text_clip:'
+            new_8g = (
+                '        # phase: encodes done -> VAE off, UNet (wrapper incl. dual/learned tokens) on.\n'
+                '        # Must precede the learned-token reads below so they come back on-device.\n'
+                '        _eb_phase_to(self.vae, "cpu")\n'
+                '        _eb_phase_to(self.unet, getattr(self, "_execution_device", None) or "cuda")\n'
+                '        if self.unet.use_learned_text_clip:')
+            if ('_eb_phase_to(self.unet, getattr(self, "_execution_device", None) or "cuda")' not in text
+                    and old_8g in text):
+                text = text.replace(old_8g, new_8g, 1)
+                changed = True
+
+            # 8h. Before the final decode: UNet -> cpu, VAE -> device.
+            old_8h = (
+                '            image = self.vae.decode(latents / self.vae.config.scaling_factor, '
+                'return_dict=False, generator=generator)[0]')
+            new_8h = (
+                '            # phase: denoise done -> UNet off, VAE back on for the final decode.\n'
+                '            _eb_phase_to(self.unet, "cpu")\n'
+                '            _eb_phase_to(self.vae, getattr(self, "_execution_device", None) or "cuda")\n'
+                '            image = self.vae.decode(latents / self.vae.config.scaling_factor, '
+                'return_dict=False, generator=generator)[0]')
+            if ('_eb_phase_to(self.vae, getattr(self, "_execution_device", None) or "cuda")' not in text
+                    and old_8h in text):
+                text = text.replace(old_8h, new_8h, 1)
+                changed = True
+
+            if changed:
+                pp.write_text(text, encoding="utf-8")
+                print(f"[{__name__}] patched phase offload into hunyuanpaintpbr/pipeline.py")
 
     @staticmethod
     def _patch_out_bpy(paint_src: Path) -> None:
@@ -1243,7 +1434,7 @@ class Hunyuan3DShapeV21Generator(BaseGenerator):
                     {"value": 0, "label": "No (shape only)"},
                     {"value": 1, "label": "Yes (paint PBR textures)"},
                 ],
-                "tooltip": "Paint PBR textures after the shape. Needs ~21 GB VRAM, a big first-run download, and a C++/CUDA build toolchain. Textures are ignored by CAD/STEP export.",
+                "tooltip": "Paint PBR textures after the shape. Runs in ~13 GB VRAM on the reduced path (~20 GB full GPU); Auto fits it to your card. Needs a big first-run download and a C++/CUDA build toolchain. Textures are ignored by CAD/STEP export.",
             },
             {
                 "id": "texture_resolution",
@@ -1269,14 +1460,13 @@ class Hunyuan3DShapeV21Generator(BaseGenerator):
                 "id": "texture_memory",
                 "label": "Texture memory",
                 "type": "select",
-                "default": "balanced",
+                "default": "auto",
                 "options": [
-                    {"value": "low", "label": "Low (smallest, softest)"},
-                    {"value": "balanced", "label": "Balanced (recommended)"},
-                    {"value": "high", "label": "High (sharpest, needs an empty GPU)"},
-                    {"value": "max", "label": "Max (4096 texture; may need shared GPU memory)"},
+                    {"value": "auto", "label": "Auto (recommended — picks the best fit)"},
+                    {"value": "standard", "label": "Standard (~20 GB, full GPU)"},
+                    {"value": "reduced", "label": "Reduced VRAM (~13 GB, ~5% slower)"},
                 ],
-                "tooltip": "Caps the texture pass's VRAM so it can't spill into system RAM and crawl. Adaptive to free VRAM; this sets the ceiling — a busy GPU may drop a step lower to fit. Balanced targets a ~20 GB peak for 24 GB cards.",
+                "tooltip": "How much VRAM the texture pass may use, at identical quality. Auto measures free VRAM and picks the full-GPU path (~20 GB) when it fits, else the reduced-VRAM path. Reduced runs the same quality with components staged between CPU and GPU (~13 GB, ~5% slower). 768 view resolution needs ~+14 GB (turn on Use shared GPU memory); each view above 6 adds ~+0.7 GB.",
             },
             {
                 "id": "use_shared_vram",
@@ -1287,7 +1477,7 @@ class Hunyuan3DShapeV21Generator(BaseGenerator):
                     {"value": 0, "label": "Off"},
                     {"value": 1, "label": "On (borrow system RAM — much slower)"},
                 ],
-                "tooltip": "Lets High/Max run when they exceed your VRAM by paging to system RAM over PCIe. Much slower (tens of minutes) and needs a large Windows page file. Leave Off unless you want maximum texture quality and don't mind the wait.",
+                "tooltip": "Lets a texture run exceed your VRAM by paging to system RAM over PCIe — needed only for very high settings (e.g. 768 view resolution) on smaller cards. Much slower (tens of minutes) and needs a large Windows page file. Leave Off; Auto already fits normal runs to your card.",
             },
             {
                 "id": "mesh_mode",
