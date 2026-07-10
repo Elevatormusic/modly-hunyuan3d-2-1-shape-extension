@@ -10,7 +10,7 @@
   <img src="https://img.shields.io/badge/textures-~13_GB_reduced-E491C9" alt="textures vram">
 </p>
 
-**Turn a single image into a high-fidelity 3D model — with optional PBR textures — right inside [Modly](https://github.com/lightningpixel/modly).**
+**Turn a single image into a high-fidelity 3D model — with optional PBR textures — right inside [Modly](https://modly3d.app/).**
 
 Wraps the full **Hunyuan3D-2.1** shape checkpoint (Tencent's 3.3B `hunyuan3d-dit-v2-1`, not the lightweight Mini) with an optional paint pass.
 
@@ -41,7 +41,7 @@ Wraps the full **Hunyuan3D-2.1** shape checkpoint (Tencent's 3.3B `hunyuan3d-dit
 
 ## &#9889; Quick start
 
-1. You'll need **[Modly](https://github.com/lightningpixel/modly)** — the free, open-source desktop app this extension plugs into (generates 3D models from images, entirely on your GPU). Install it first.
+1. You'll need **[Modly](https://modly3d.app/)** — the free, open-source desktop app this extension plugs into (generates 3D models from images, entirely on your GPU). Install it first.
 2. In Modly: **Extensions &#8594; Install from GitHub**, paste this repo's URL. It builds its own isolated Python environment automatically.
 3. Click **Download** on the model variant (~7.4 GB weights, one time).
 4. Drop in an image and generate. Want color? Switch on **Generate textures (PBR)**.
@@ -264,4 +264,4 @@ License Agreement and its Acceptable Use Policy — including the territorial
 scope (the license does not apply in the EU, UK, or South Korea) and the
 prohibited-uses list.
 
-<div align="center"><sub>A community extension for <a href="https://github.com/lightningpixel/modly">Modly</a>. Not affiliated with Tencent or lightningpixel.</sub></div>
+<div align="center"><sub>A community extension for <a href="https://modly3d.app/">Modly</a>. Not affiliated with Tencent or lightningpixel.</sub></div>
