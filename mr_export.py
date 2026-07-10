@@ -9,8 +9,20 @@ from PIL import Image
 
 
 def pack_metallic_roughness(metallic_img, roughness_img):
-    m = np.asarray(metallic_img.convert("L"))
-    r = np.asarray(roughness_img.convert("L"))
+    m_img = metallic_img.convert("L")
+    r_img = roughness_img.convert("L")
+    # Resize to a common size instead of raising on a mismatch. A raise here made
+    # build_glb_with_mr fall back to the albedo-only path, silently dropping BOTH
+    # the metallic and roughness maps (Fix 11). Target the larger of the two so we
+    # don't throw away detail.
+    if m_img.size != r_img.size:
+        target = (max(m_img.width, r_img.width), max(m_img.height, r_img.height))
+        if m_img.size != target:
+            m_img = m_img.resize(target)
+        if r_img.size != target:
+            r_img = r_img.resize(target)
+    m = np.asarray(m_img)
+    r = np.asarray(r_img)
     h, w = m.shape
     out = np.zeros((h, w, 3), np.uint8)
     out[..., 0] = 255      # R unused

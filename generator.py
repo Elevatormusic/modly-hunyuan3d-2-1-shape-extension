@@ -605,6 +605,14 @@ class Hunyuan3DShapeV21Generator(BaseGenerator):
             del paint_pipeline
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
+            # Remove the paint scratch dir (shape.glb + cond.png + textured.obj/.mtl
+            # + texture maps, ~15-25 MB/gen). It leaked to %TEMP% every run. Runs
+            # after finishing.finish() (which reads textured.* for the QA sheet), and
+            # is guarded so cleanup can never break the never-raise contract (Fix 10).
+            try:
+                shutil.rmtree(tmp_dir, ignore_errors=True)
+            except Exception:
+                pass
 
     def _ensure_hy3dpaint(self, progress_cb=None) -> Path:
         """Download hy3dpaint source, build its two native modules, fetch the

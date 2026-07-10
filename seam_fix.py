@@ -52,11 +52,68 @@ def _uv_to_px(uv, w, h):
     return np.array([uv[0] * (w - 1), (1.0 - uv[1]) * (h - 1)])
 
 
+def _edge_key(p, q):
+    """Order-independent key for a UV edge, rounded to fold float noise."""
+    a = (round(float(p[0]), 6), round(float(p[1]), 6))
+    b = (round(float(q[0]), 6), round(float(q[1]), 6))
+    return (a, b) if a <= b else (b, a)
+
+
+def _third_lookup(faces, uvs):
+    """Map each undirected UV edge -> the UV of its triangle's opposite (third)
+    corner. A chart's seam edge belongs to exactly one triangle in that chart, so
+    the third vertex gives the true interior side of the seam (used by _reconcile
+    instead of the twin's packed position, which xatlas may place toward this
+    chart's interior)."""
+    lut = {}
+    for f in np.asarray(faces):
+        i, j, k = int(f[0]), int(f[1]), int(f[2])
+        for e0, e1, opp in ((i, j, k), (j, k, i), (k, i, j)):
+            lut.setdefault(_edge_key(uvs[e0], uvs[e1]), np.asarray(uvs[opp], float))
+    return lut
+
+
+def _inward_perp(p0, p1, third):
+    """Unit vector perpendicular to the seam edge (p0->p1), pointing toward the
+    `third` (opposite) corner, i.e. into the triangle interior. Degenerate edges
+    or a collinear third fall back to a safe direction rather than raising."""
+    p0 = np.asarray(p0, float); p1 = np.asarray(p1, float); third = np.asarray(third, float)
+    e = p1 - p0
+    el = np.hypot(*e)
+    if el < 1e-9:                       # degenerate edge -> aim straight at third
+        g = third - p0
+        return g / (np.hypot(*g) or 1.0)
+    ehat = e / el
+    g = third - 0.5 * (p0 + p1)
+    perp = g - np.dot(g, ehat) * ehat   # component of (mid->third) normal to edge
+    pl = np.hypot(*perp)
+    if pl < 1e-9:                       # third collinear with the edge -> rotate normal
+        return np.array([-ehat[1], ehat[0]])
+    return perp / pl
+
+
+def _seam_band(base, seam_len_px):
+    """Feather band for ONE seam: the base band clamped so it never exceeds a
+    third of THAT seam's own edge length. Per-seam so a single sub-3px seam edge
+    can't collapse the band for the whole atlas (Fix 2)."""
+    return max(1, min(int(base), int(seam_len_px // 3)))
+
+
+def _seam_samples(pa0, pa1, pb0, pb1):
+    """Along-seam sample count taken from the LONGER of the two sides, so the
+    denser (finer-packed) twin is covered without holes (Fix 9)."""
+    la = np.hypot(*(np.asarray(pa1, float) - np.asarray(pa0, float)))
+    lb = np.hypot(*(np.asarray(pb1, float) - np.asarray(pb0, float)))
+    return max(2, int(max(la, lb)) + 1)
+
+
 def _reconcile(atlas, faces, uvs, seams, seam_band_px):
     if not seams:
         return atlas
     h, w = atlas.shape[:2]
-    band = max(1, int(seam_band_px))
+    base = max(1, int(seam_band_px))
+    uvs = np.asarray(uvs, np.float64)
+    third = _third_lookup(faces, uvs)
     # accumulate a per-texel additive correction, feathered by distance to seam.
     corr = np.zeros((h, w, atlas.shape[2]), np.float64)
     wsum = np.zeros((h, w), np.float64)
@@ -64,14 +121,26 @@ def _reconcile(atlas, faces, uvs, seams, seam_band_px):
     for a0, a1, b0, b1 in seams:
         pa0, pa1 = _uv_to_px(a0, w, h), _uv_to_px(a1, w, h)
         pb0, pb1 = _uv_to_px(b0, w, h), _uv_to_px(b1, w, h)
-        n = max(2, int(np.hypot(*(pa1 - pa0))) + 1)
-        for t in np.linspace(0.0, 1.0, n):
+        # Fix 9: a non-finite UV (NaN/inf) would blow up hypot/int below and abort
+        # the WHOLE stage — skip just this seam and carry on.
+        if not (np.all(np.isfinite(pa0)) and np.all(np.isfinite(pa1))
+                and np.all(np.isfinite(pb0)) and np.all(np.isfinite(pb1))):
+            continue
+        # Fix 1: interior direction from each owning triangle's THIRD vertex.
+        ta = third.get(_edge_key(a0, a1))
+        tb = third.get(_edge_key(b0, b1))
+        if ta is None or tb is None:
+            continue
+        da = _inward_perp(pa0, pa1, _uv_to_px(ta, w, h))
+        db = _inward_perp(pb0, pb1, _uv_to_px(tb, w, h))
+        # Fix 2: clamp the band from this seam's own edge length.
+        seam_len = max(np.hypot(*(pa1 - pa0)), np.hypot(*(pb1 - pb0)))
+        band = _seam_band(base, seam_len)
+        # Fix 9: sample density from the longer side so the denser twin is covered.
+        for t in np.linspace(0.0, 1.0, _seam_samples(pa0, pa1, pb0, pb1)):
             ca = pa0 + t * (pa1 - pa0)
             cb = pb0 + t * (pb1 - pb0)
-            # inward normals (toward each chart interior): sample 3px in
-            da = _inward(ca, cb)
-            db = _inward(cb, ca)
-            sa = _sample(atf, ca + 3 * da)
+            sa = _sample(atf, ca + 3 * da)   # 3px into each chart interior
             sb = _sample(atf, cb + 3 * db)
             target = 0.5 * (sa + sb)
             _spray(corr, wsum, ca, da, band, target - sa)
@@ -82,16 +151,10 @@ def _reconcile(atlas, faces, uvs, seams, seam_band_px):
     return np.clip(out, 0, 255).astype(atlas.dtype)
 
 
-def _inward(c, other):
-    d = c - other
-    nrm = np.hypot(*d) or 1.0
-    return d / nrm
-
-
 def _sample(atf, p):
     h, w = atf.shape[:2]
-    x = int(np.clip(round(p[0]), 0, w - 1))
-    y = int(np.clip(round(p[1]), 0, h - 1))
+    x = int(np.clip(np.floor(p[0] + 0.5), 0, w - 1))
+    y = int(np.clip(np.floor(p[1] + 0.5), 0, h - 1))
     return atf[y, x]
 
 
@@ -99,41 +162,50 @@ def _spray(corr, wsum, c, inward, band, delta):
     h, w = wsum.shape
     for d in range(band):
         p = c + d * inward
-        x = int(round(p[0])); y = int(round(p[1]))
+        # round-half-up (floor(x+0.5)); Python's banker's round() skipped columns
+        # (a seam at x=31.5 stepping inward never touched column 33) (Fix 9).
+        x = int(np.floor(p[0] + 0.5)); y = int(np.floor(p[1] + 0.5))
         if 0 <= x < w and 0 <= y < h:
             fw = 1.0 - d / float(band)   # feather: full at seam -> 0 at band edge
             corr[y, x] += fw * delta
             wsum[y, x] += fw
 
 
-def _local_band(uvs, faces, seams, atlas_dim):
-    base = max(1, round(9 * atlas_dim / 4096))
-    if not seams:
-        return base
-    # shortest incident UV edge length in texels among seam edges
-    shortest = min(np.hypot(*((a1 - a0) * atlas_dim)) for a0, a1, _, _ in seams)
-    clamp = max(1, int(shortest // 3))
-    return min(base, clamp)
+def _local_band(atlas_dim):
+    """Base feather band in texels, scaled to the atlas resolution. The per-seam
+    clamp now lives in _reconcile (Fix 2), so this returns the base only."""
+    return max(1, round(9 * atlas_dim / 4096))
 
 
 def _coverage_mask(uvs, faces, h, w):
-    from matplotlib.path import Path  # available via trimesh dep chain
+    # Pure-numpy barycentric point-in-triangle test (same rasterizer as
+    # normal_bake.rasterize_uv_atlas). Matplotlib is NOT a declared dependency —
+    # it only reached us via an unpinned realesrgan->facexlib->filterpy chain, so
+    # the old Path.contains_points made seam-fix silently no-op when it was absent
+    # (Fix 4).
+    uvs = np.asarray(uvs, np.float64)
     mask = np.zeros((h, w), bool)
     for f in np.asarray(faces):
-        tri = np.array([_uv_to_px(uvs[int(i)], w, h) for i in f])
-        # restrict the point test to this triangle's pixel bounding box so we
-        # test O(bbox) texels per face instead of the whole h*w grid. Result is
-        # identical: texels outside the bbox can't be inside the triangle.
-        x0 = int(np.floor(tri[:, 0].min())); x1 = int(np.ceil(tri[:, 0].max()))
-        y0 = int(np.floor(tri[:, 1].min())); y1 = int(np.ceil(tri[:, 1].max()))
+        a, b, c = (_uv_to_px(uvs[int(f[0])], w, h),
+                   _uv_to_px(uvs[int(f[1])], w, h),
+                   _uv_to_px(uvs[int(f[2])], w, h))
+        # restrict the test to the triangle's pixel bounding box (O(bbox) texels).
+        x0 = int(np.floor(min(a[0], b[0], c[0]))); x1 = int(np.ceil(max(a[0], b[0], c[0])))
+        y0 = int(np.floor(min(a[1], b[1], c[1]))); y1 = int(np.ceil(max(a[1], b[1], c[1])))
         x0 = max(0, min(x0, w - 1)); x1 = max(0, min(x1, w - 1))
         y0 = max(0, min(y0, h - 1)); y1 = max(0, min(y1, h - 1))
         if x1 < x0 or y1 < y0:
             continue
+        d = (b[1] - c[1]) * (a[0] - c[0]) + (c[0] - b[0]) * (a[1] - c[1])
+        if abs(d) < 1e-12:              # degenerate triangle covers no texel
+            continue
         xs, ys = np.meshgrid(np.arange(x0, x1 + 1), np.arange(y0, y1 + 1))
-        pts = np.column_stack([xs.ravel(), ys.ravel()])
-        inside = Path(tri).contains_points(pts).reshape(ys.shape)
-        mask[y0:y1 + 1, x0:x1 + 1] |= inside
+        px = xs.ravel().astype(np.float64); py = ys.ravel().astype(np.float64)
+        wa = ((b[1] - c[1]) * (px - c[0]) + (c[0] - b[0]) * (py - c[1])) / d
+        wb = ((c[1] - a[1]) * (px - c[0]) + (a[0] - c[0]) * (py - c[1])) / d
+        wc = 1.0 - wa - wb
+        inside = (wa >= -1e-6) & (wb >= -1e-6) & (wc >= -1e-6)
+        mask[ys.ravel()[inside], xs.ravel()[inside]] = True
     return mask
 
 
@@ -160,7 +232,7 @@ def reconcile_and_dilate(vertices, faces, uvs, atlas, *,
     dim = max(h, w)
     seams = _find_seam_edges(vertices, faces, uvs)
     if seam_band_px is None:
-        seam_band_px = _local_band(uvs, faces, seams, dim)
+        seam_band_px = _local_band(dim)
     if gutter_px is None:
         gutter_px = max(1, round(16 * dim / 4096))
     if seams:
@@ -187,7 +259,14 @@ def apply_to_glb(glb_path):
             img = getattr(mat, attr, None)
             if img is None:
                 continue
+            src_fmt = getattr(img, "format", None)   # capture BEFORE convert() drops it
             arr = np.asarray(img.convert("RGB"))
             fixed = reconcile_and_dilate(verts, faces, uvs, arr)
-            setattr(mat, attr, Image.fromarray(fixed, "RGB"))
+            new_img = Image.fromarray(fixed, "RGB")
+            # Preserve the source encoding. Image.fromarray has format=None, which
+            # makes trimesh re-encode the atlas as PNG on export — ~10x bloat when
+            # the paint emitted a JPEG albedo (Fix 3).
+            if src_fmt:
+                new_img.format = src_fmt
+            setattr(mat, attr, new_img)
     scene.export(glb_path)
