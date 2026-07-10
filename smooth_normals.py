@@ -3,8 +3,11 @@
 
 The paint/export path ships a GLB with POSITION+TEXCOORD_0 and no NORMAL, so
 glTF viewers (Modly's three.js) flat-shade it -> faceted. This writes per-vertex
-smooth normals with a crease-angle threshold: shared edges below the threshold
-are smoothed; edges >= threshold stay hard (vertices split, per-side normals).
+smooth normals with crease-aware selection: hard edges (>= crease_deg +
+CREASE_HYST_DEG) anchor crease chains, band edges join only via a chain that
+contains a hard edge and spans >= MIN_CHAIN_EDGES, and everything else —
+including dropped fragments — is smoothed (kept creases split vertices with
+per-side normals).
 
 Pure numpy + trimesh core (crease_smooth) + a trimesh re-export wrapper
 (apply_to_glb). No torch, no GPU, no bpy. Wired into finishing.finish() after
@@ -42,7 +45,8 @@ def crease_smooth(positions, faces, uvs, *, crease_deg=45.0):
 
     Returns (new_positions, new_uvs, new_faces, normals). Output vertices are
     keyed by (input_vertex, smoothing_group) so existing UV seams are preserved
-    and vertices are split only across creases (dihedral >= crease_deg). Each
+    and vertices are split only across KEPT crease chains (hysteresis + chain
+    coherence — see the module constants; isolated fragments smooth). Each
     output vertex's normal is the area-weighted average of the faces incident to
     its (welded_position, smoothing_group) — so a UV seam with no crease keeps a
     single shared normal (smooth). Normals are unit and never NaN. new_faces has
