@@ -77,13 +77,16 @@ A prompt like *"product render on a white background, 3/4 view, soft even lighti
 
 ## &#128190; Will it run on my GPU?
 
-**Short answer: textures fit 16 GB cards, and a 12 GB card works too.**
+Find your card — quality is **identical** on every row; **Auto** picks the right mode for you at generation time:
 
-- **Shape** generates on **~10 GB VRAM** with no build tools — comfortable on most modern NVIDIA cards.
-- **Textures** paint at full stock quality either way; the only question is how much VRAM they use. **Texture memory** defaults to **Auto**, which measures your free VRAM at generation time and picks:
-  - **Standard (full GPU)** — **~20 GB** peak, when it fits.
-  - **Reduced VRAM** — **~13 GB** peak at the *same* quality, staging components between CPU and GPU (~5% slower). This is what lets textures **fit a 16 GB card**.
-- **12 GB cards** work too — the reduced path peaks ~1 GB over 12 GB, so it spills that ~1 GB to shared system memory and finishes a touch slower.
+| Your GPU | Shape | Textures |
+|---|---|---|
+| **24 GB** — RTX 3090 / 4090 / 5090 | ✅ | ✅ Full-GPU mode (~20 GB peak) |
+| **16 GB** — RTX 4080 / 4070 Ti Super / 4060 Ti 16 GB / 5080 | ✅ | ✅ Reduced-VRAM mode (~13 GB peak, ~5% slower) |
+| **12 GB** — RTX 3060 12 GB / 4070 / 5070 | ✅ | ✅ Reduced-VRAM mode; ~1 GB briefly borrows system memory — a touch slower |
+| **8–10 GB** — RTX 3070 / 4060 / 2080 | ✅ (10 GB) | ⚠️ Runs by borrowing more system memory (**Use shared GPU memory**) — noticeably slower |
+
+The **Reduced-VRAM mode** is what makes the smaller rows work: it stages model components between CPU and GPU so the texture pass peaks at **~13 GB instead of ~20 — at the exact same output quality**.
 
 <sub>Measured on an RTX 3090 (512 view resolution, 6 views): 20.4 GB full-GPU vs 13.0 GB reduced, quality identical. Higher settings cost more — 768 view resolution adds ~14 GB (turn on **Use shared GPU memory**), and each view above 6 adds ~0.7 GB.</sub>
 
