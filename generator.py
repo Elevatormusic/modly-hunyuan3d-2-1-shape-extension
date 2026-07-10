@@ -495,10 +495,18 @@ class Hunyuan3DShapeV21Generator(BaseGenerator):
                 float("inf"), texture_memory, extra_budget_gb=_extra_budget)
         capacity.apply_texture_plan(conf, _plan)
         os.environ["EB_SR_CHUNK"] = str(_plan.sr_chunk)   # read by eb_accel.super_resolve_batch
+        # Reduced-VRAM path: env-gate the hook-free "phase" component staging (patched into
+        # the vendored paint source by _patch_gpu_accel section 8). MUST be set before the
+        # paint pipeline is constructed below. Default off = byte-identical stock behavior.
+        if _plan.offload:
+            os.environ["EB_CPU_OFFLOAD"] = "phase"
+        else:
+            os.environ.pop("EB_CPU_OFFLOAD", None)
         if _plan.warning:
             print(f"[{self.MODEL_ID}] VRAM: {_plan.warning}")
             self._report(progress_cb, 62, _plan.warning)
         print(f"[{self.MODEL_ID}] texture_memory tier={_plan.tier} "
+              f"offload={'on' if _plan.offload else 'off'} "
               f"render={_plan.render_size} texture={_plan.texture_size} sr_chunk={_plan.sr_chunk} "
               f"shared_budget={_extra_budget:.0f}GB")
 
@@ -878,6 +886,187 @@ class Hunyuan3DShapeV21Generator(BaseGenerator):
                     '        self.render.save_mesh(output_mesh_path', 1)
                 tgp.write_text(text, encoding="utf-8")
                 print(f"[{self.MODEL_ID}] patched paint-stage progress milestones into textureGenPipeline.py")
+
+        # 8. Hook-free "phase" CPU offload (the reduced-VRAM path). Reproduces the
+        # spike-validated component-staging edits onto a freshly downloaded
+        # _hy3dpaint_src. Env-gated (EB_CPU_OFFLOAD=phase, set per-run in _run_texture);
+        # default off = byte-identical stock behavior. Idempotent + a no-op on the
+        # already-patched live vendored files.
+        self._patch_phase_offload(paint_src)
+
+    @staticmethod
+    def _patch_phase_offload(paint_src: Path) -> None:
+        """Section 8: reproduce the hook-free EB_CPU_OFFLOAD=phase edits onto a freshly
+        downloaded _hy3dpaint_src (utils/multiview_utils.py + hunyuanpaintpbr/pipeline.py).
+
+        Every edit is guarded by a MARKER string that is already present in the
+        hand-patched live vendored files, so re-running the patch on them is a no-op; and
+        anchored on a stable UPSTREAM (pristine) line, so it reproduces the phase edits on a
+        clean download. Only the "phase" branch is productionized (the spike's extra
+        "1"/"model"/"seq" branches stay in the live file but the durable patch never
+        depends on them). Whole components move at stage boundaries — no accelerate hooks,
+        which this custom dual-stream pipeline bypasses. Never raises."""
+
+        # --- utils/multiview_utils.py -----------------------------------------------
+        mu = paint_src / "utils" / "multiview_utils.py"
+        if mu.exists():
+            text = mu.read_text(encoding="utf-8")
+            changed = False
+
+            # 8a. Offload branch in multiviewDiffusionNet.__init__: in phase mode pin the
+            # pipeline's _execution_device to the config device and keep the pipe on CPU.
+            old_8a = (
+                '        setattr(pipeline, "view_size", cfg.model.params.get("view_size", 320))\n'
+                '        self.pipeline = pipeline.to(self.device)')
+            new_8a = (
+                '        setattr(pipeline, "view_size", cfg.model.params.get("view_size", 320))\n'
+                '        # EB phase CPU offload (env-gated EB_CPU_OFFLOAD=phase, default OFF): hook-free\n'
+                '        # offload so tight-VRAM cards paint at full quality. This custom pipeline calls\n'
+                '        # submodules directly and feeds module attributes as tensors, which breaks BOTH\n'
+                '        # accelerate offload modes -> whole components move at stage boundaries instead.\n'
+                '        # Modules start on CPU; device introspection is pinned to the execution device.\n'
+                '        if os.environ.get("EB_CPU_OFFLOAD", "") == "phase":\n'
+                '            try:\n'
+                '                _eb_dev = torch.device(self.device)\n'
+                '                type(pipeline)._execution_device = property(lambda s, _d=_eb_dev: _d)\n'
+                '                self.pipeline = pipeline  # stays on CPU; components phase in per stage\n'
+                '                print("[eb_accel] paint diffusion: PHASE CPU offload ENABLED")\n'
+                '            except Exception as exc:\n'
+                '                print(f"[eb_accel] phase offload failed ({exc!r}); using full-GPU path")\n'
+                '                self.pipeline = pipeline.to(self.device)\n'
+                '        else:\n'
+                '            self.pipeline = pipeline.to(self.device)')
+            if "PHASE CPU offload ENABLED" not in text and old_8a in text:
+                text = text.replace(old_8a, new_8a, 1)
+                changed = True
+
+            # 8b. DINO-giant to CPU at init in phase mode (phased onto GPU only for its forward).
+            old_8b = (
+                '            self.dino_v2 = Dino_v2(config.dino_ckpt_path).to(torch.float16)\n'
+                '            self.dino_v2 = self.dino_v2.to(self.device)')
+            new_8b = (
+                '            self.dino_v2 = Dino_v2(config.dino_ckpt_path).to(torch.float16)\n'
+                '            if os.environ.get("EB_CPU_OFFLOAD", "") == "phase":\n'
+                '                self.dino_v2 = self.dino_v2.to("cpu")  # phased onto GPU only for its forward\n'
+                '            else:\n'
+                '                self.dino_v2 = self.dino_v2.to(self.device)')
+            if 'self.dino_v2 = self.dino_v2.to("cpu")' not in text and old_8b in text:
+                text = text.replace(old_8b, new_8b, 1)
+                changed = True
+
+            # 8c. generator device fix in forward_one: use the pinned execution device
+            # (modules sit on CPU under phase offload, so .device is a non-accelerator).
+            old_8c = (
+                '        kwargs = dict(generator=torch.Generator(device=self.pipeline.device).manual_seed(0))')
+            new_8c = (
+                '        # Under phase offload the pipeline sits on CPU, so .device is a non-accelerator;\n'
+                '        # _execution_device is the pinned execution device (== .device on the stock path).\n'
+                '        _eb_dev = getattr(self.pipeline, "_execution_device", None) or self.pipeline.device\n'
+                '        kwargs = dict(generator=torch.Generator(device=_eb_dev).manual_seed(0))')
+            if "_eb_dev = getattr(self.pipeline" not in text and old_8c in text:
+                text = text.replace(old_8c, new_8c, 1)
+                changed = True
+
+            # 8d. DINO phasing in forward_one: onto GPU for its single forward, back to CPU
+            # (+ empty_cache) after.
+            old_8d = (
+                '        if hasattr(self.pipeline.unet, "use_dino") and self.pipeline.unet.use_dino:\n'
+                '            dino_hidden_states = self.dino_v2(input_images[0])\n'
+                '            kwargs["dino_hidden_states"] = dino_hidden_states')
+            new_8d = (
+                '        if hasattr(self.pipeline.unet, "use_dino") and self.pipeline.unet.use_dino:\n'
+                '            _eb_ph = os.environ.get("EB_CPU_OFFLOAD", "") == "phase"\n'
+                '            if _eb_ph:\n'
+                '                self.dino_v2 = self.dino_v2.to(_eb_dev)\n'
+                '            dino_hidden_states = self.dino_v2(input_images[0])\n'
+                '            if _eb_ph:\n'
+                '                self.dino_v2 = self.dino_v2.to("cpu")\n'
+                '                torch.cuda.empty_cache()\n'
+                '            kwargs["dino_hidden_states"] = dino_hidden_states')
+            if "_eb_ph = os.environ.get" not in text and old_8d in text:
+                text = text.replace(old_8d, new_8d, 1)
+                changed = True
+
+            if changed:
+                mu.write_text(text, encoding="utf-8")
+                print(f"[{__name__}] patched phase offload into multiview_utils.py")
+
+        # --- hunyuanpaintpbr/pipeline.py --------------------------------------------
+        pp = paint_src / "hunyuanpaintpbr" / "pipeline.py"
+        if pp.exists():
+            text = pp.read_text(encoding="utf-8")
+            changed = False
+
+            # 8e. Module-level _eb_phase_to() helper (no-op unless phase env; never raises).
+            helper = (
+                'def _eb_phase_to(module, device):\n'
+                '    """Phase-offload helper (EB_CPU_OFFLOAD=phase): move a whole component between\n'
+                '    CPU and the execution device at stage boundaries. Hook-free by design — this\n'
+                '    pipeline calls submodules directly and feeds module attributes (learned tokens)\n'
+                '    as tensors, which breaks BOTH of accelerate\'s offload modes. No-op unless the\n'
+                '    phase env var is set; never raises."""\n'
+                '    import os\n'
+                '    if os.environ.get("EB_CPU_OFFLOAD") != "phase":\n'
+                '        return\n'
+                '    try:\n'
+                '        module.to(device)\n'
+                '        if str(device) == "cpu":\n'
+                '            torch.cuda.empty_cache()\n'
+                '    except Exception as exc:\n'
+                '        print(f"[eb_accel] phase move failed ({exc!r})")\n'
+                '\n'
+                '\n'
+                'class HunyuanPaintPipeline(StableDiffusionPipeline):')
+            if "def _eb_phase_to(" not in text and "class HunyuanPaintPipeline(StableDiffusionPipeline):" in text:
+                text = text.replace(
+                    "class HunyuanPaintPipeline(StableDiffusionPipeline):", helper, 1)
+                changed = True
+
+            # 8f. Before the condition encodes: VAE onto GPU + device fix (was self.vae.device).
+            old_8f = (
+                '        images_vae = images_vae.to(device=self.vae.device, dtype=self.unet.dtype)')
+            new_8f = (
+                '        # vae.device is meta under CPU offload; _execution_device is the execution\n'
+                '        # device (identical to vae.device on the stock full-GPU path).\n'
+                '        _eb_dev = getattr(self, "_execution_device", None) or self.vae.device\n'
+                '        _eb_phase_to(self.vae, _eb_dev)  # phase: VAE on GPU for the condition encodes\n'
+                '        images_vae = images_vae.to(device=_eb_dev, dtype=self.unet.dtype)')
+            if "_eb_phase_to(self.vae, _eb_dev)" not in text and old_8f in text:
+                text = text.replace(old_8f, new_8f, 1)
+                changed = True
+
+            # 8g. Before the learned-token block: VAE -> cpu, UNet (wrapper) -> device.
+            # MUST precede the learned-token reads so they come back on-device.
+            old_8g = '        if self.unet.use_learned_text_clip:'
+            new_8g = (
+                '        # phase: encodes done -> VAE off, UNet (wrapper incl. dual/learned tokens) on.\n'
+                '        # Must precede the learned-token reads below so they come back on-device.\n'
+                '        _eb_phase_to(self.vae, "cpu")\n'
+                '        _eb_phase_to(self.unet, getattr(self, "_execution_device", None) or "cuda")\n'
+                '        if self.unet.use_learned_text_clip:')
+            if ('_eb_phase_to(self.unet, getattr(self, "_execution_device", None) or "cuda")' not in text
+                    and old_8g in text):
+                text = text.replace(old_8g, new_8g, 1)
+                changed = True
+
+            # 8h. Before the final decode: UNet -> cpu, VAE -> device.
+            old_8h = (
+                '            image = self.vae.decode(latents / self.vae.config.scaling_factor, '
+                'return_dict=False, generator=generator)[0]')
+            new_8h = (
+                '            # phase: denoise done -> UNet off, VAE back on for the final decode.\n'
+                '            _eb_phase_to(self.unet, "cpu")\n'
+                '            _eb_phase_to(self.vae, getattr(self, "_execution_device", None) or "cuda")\n'
+                '            image = self.vae.decode(latents / self.vae.config.scaling_factor, '
+                'return_dict=False, generator=generator)[0]')
+            if ('_eb_phase_to(self.vae, getattr(self, "_execution_device", None) or "cuda")' not in text
+                    and old_8h in text):
+                text = text.replace(old_8h, new_8h, 1)
+                changed = True
+
+            if changed:
+                pp.write_text(text, encoding="utf-8")
+                print(f"[{__name__}] patched phase offload into hunyuanpaintpbr/pipeline.py")
 
     @staticmethod
     def _patch_out_bpy(paint_src: Path) -> None:
