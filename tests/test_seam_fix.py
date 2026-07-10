@@ -161,6 +161,19 @@ class TestReviewFixes(unittest.TestCase):
                                   np.zeros((0, 2), float), seams, 4)
         np.testing.assert_array_equal(out, atlas)   # unchanged, no raise
 
+    def test_reconcile_skips_nonfinite_third_vertex(self):
+        # C-9 follow-up: a NaN THIRD-vertex UV (endpoints finite) must skip just
+        # that seam — the third vertex feeds _inward_perp/_sample, so an unguarded
+        # NaN there raised ValueError and aborted the whole reconcile stage.
+        atlas = np.full((16, 16, 3), 100, np.uint8)
+        faces = np.array([[0, 1, 2], [3, 4, 5]], int)
+        uvs = np.array([[0.5, 0.2], [0.5, 0.8], [np.nan, np.nan],   # A: third = NaN
+                        [0.51, 0.2], [0.51, 0.8], [0.7, 0.5]],       # B: third finite
+                       float)
+        seams = [(uvs[0], uvs[1], uvs[3], uvs[4])]
+        out = seam_fix._reconcile(atlas.copy(), faces, uvs, seams, 4)
+        np.testing.assert_array_equal(out, atlas)   # skipped, unchanged, no raise
+
     def test_spray_touches_contiguous_columns(self):
         # C-9: integer round() (banker's) skipped columns (a seam at x=3.5 stepping
         # inward hit 4,4,6 -> col 5 lost). Round-half-up hits every column.

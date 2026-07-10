@@ -129,7 +129,11 @@ def _reconcile(atlas, faces, uvs, seams, seam_band_px):
         # Fix 1: interior direction from each owning triangle's THIRD vertex.
         ta = third.get(_edge_key(a0, a1))
         tb = third.get(_edge_key(b0, b1))
-        if ta is None or tb is None:
+        # Fix 9 (review follow-up): the third-vertex UVs feed _inward_perp/_sample
+        # below, so a non-finite third corner must skip this seam too — not just the
+        # endpoints guarded above — or one bad seam aborts the whole reconcile.
+        if (ta is None or tb is None
+                or not (np.all(np.isfinite(ta)) and np.all(np.isfinite(tb)))):
             continue
         da = _inward_perp(pa0, pa1, _uv_to_px(ta, w, h))
         db = _inward_perp(pb0, pb1, _uv_to_px(tb, w, h))
