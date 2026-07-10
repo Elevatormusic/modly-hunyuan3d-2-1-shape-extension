@@ -663,6 +663,15 @@ class Hunyuan3DShapeV21Generator(BaseGenerator):
         install is never double-patched."""
         import shutil
 
+        # 8. Hook-free "phase" CPU offload (the reduced-VRAM path) — applied FIRST,
+        # before the eb_accel early-returns below, because it does not depend on
+        # eb_accel and _run_texture may set EB_CPU_OFFLOAD=phase; if this patch were
+        # skipped (eb_accel missing/copy failure) the env would target unpatched
+        # files and a small card would silently run full-GPU (OOM risk).
+        # Env-gated (set per-run in _run_texture); default off = stock behavior.
+        # Idempotent + a no-op on the already-patched live vendored files.
+        self._patch_phase_offload(paint_src)
+
         helper = Path(__file__).resolve().parent / "eb_accel.py"
         if not helper.exists():
             print(f"[{self.MODEL_ID}] eb_accel.py not found next to generator.py; skipping GPU accel")
@@ -886,13 +895,6 @@ class Hunyuan3DShapeV21Generator(BaseGenerator):
                     '        self.render.save_mesh(output_mesh_path', 1)
                 tgp.write_text(text, encoding="utf-8")
                 print(f"[{self.MODEL_ID}] patched paint-stage progress milestones into textureGenPipeline.py")
-
-        # 8. Hook-free "phase" CPU offload (the reduced-VRAM path). Reproduces the
-        # spike-validated component-staging edits onto a freshly downloaded
-        # _hy3dpaint_src. Env-gated (EB_CPU_OFFLOAD=phase, set per-run in _run_texture);
-        # default off = byte-identical stock behavior. Idempotent + a no-op on the
-        # already-patched live vendored files.
-        self._patch_phase_offload(paint_src)
 
     @staticmethod
     def _patch_phase_offload(paint_src: Path) -> None:
