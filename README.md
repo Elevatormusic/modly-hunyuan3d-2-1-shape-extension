@@ -129,11 +129,11 @@ The paint pass produces a standard glTF PBR set — **albedo** (base color) and 
 </details>
 
 <details>
-<summary><b>&#129704; Normal-map bake (experimental, off by default)</b></summary>
+<summary><b>&#129704; Normal-map bake (off by default)</b></summary>
 
 <br>
 
-**Bake normal map** transfers dense detail from the full-resolution mesh onto the clean base as a tangent-space normal map, so fine detail can survive cleanup as shading. It's **off by default and experimental**: on detailed / hard-surface meshes the current bake can introduce shading artifacts (a tangent-basis mismatch with the glTF viewer). A corrected high-quality bake is planned. On smooth subjects it adds little. Only applies when textures are on.
+**Bake normal map** transfers fine detail from the full-resolution mesh onto the clean base as a tangent-space normal map, so detail can survive cleanup as shading. The map is encoded in per-vertex UV-space tangents that are computed and shipped in the GLB's `TANGENT` attribute, so it renders correctly in any glTF viewer. It's **off by default** — it adds a few seconds per generation and helps most on detailed or hard-surface subjects; on smooth subjects it adds little. Only applies when textures are on.
 
 </details>
 
@@ -203,7 +203,7 @@ And because **Auto** measures free VRAM at generation time and picks the full-GP
 - **Texture memory** — VRAM path at identical quality: Auto (default) / Standard (~20 GB, full GPU) / Reduced VRAM (~13 GB, ~5% slower)
 - **Use shared GPU memory** — let a run page into system RAM when it exceeds VRAM (only needed for very high settings)
 - **Mesh cleanup** — Regular (default) / Isotropic / BPT neural
-- **Bake normal map** — experimental, off by default
+- **Bake normal map** — bake dense-mesh detail as a normal map with shipped glTF tangents (off by default)
 - **Fix texture seams** — reconcile UV-seam color jumps (on by default)
 - **QA debug sheet** — write a `*_qa.png` diagnostic beside the GLB
 

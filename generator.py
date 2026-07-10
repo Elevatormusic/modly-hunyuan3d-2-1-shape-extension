@@ -1671,10 +1671,10 @@ class Hunyuan3DShapeV21Generator(BaseGenerator):
                 "type": "select",
                 "default": 0,
                 "options": [
-                    {"value": 0, "label": "No (recommended)"},
-                    {"value": 1, "label": "Yes (experimental)"},
+                    {"value": 0, "label": "No (default)"},
+                    {"value": 1, "label": "Yes (bake detail from the dense mesh)"},
                 ],
-                "tooltip": "Experimental: bakes dense detail onto the clean base as a tangent-space normal map. Off by default - on detailed meshes the current bake can add shading artifacts (tangent-basis mismatch); a corrected high-quality bake is coming. Only applies when textures are on.",
+                "tooltip": "Bakes fine detail from the full-resolution mesh onto the clean base as a tangent-space normal map (tangents are computed and shipped in the file, so it renders correctly in any glTF viewer). Off by default — it adds a few seconds and helps most on detailed or hard-surface subjects. Only applies when textures are on.",
             },
             {
                 "id": "seam_fix",
