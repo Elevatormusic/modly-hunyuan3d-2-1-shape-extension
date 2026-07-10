@@ -89,6 +89,18 @@ class TestBakeBlendPatch(unittest.TestCase):
         gen_mod.Hunyuan3DShapeV21Generator._patch_bake_blend(d)
         self.assertTrue((d / "bake_blend.py").exists())
 
+    def test_section9_wired_before_eb_accel_early_returns(self):
+        import inspect
+        src = inspect.getsource(gen_mod.Hunyuan3DShapeV21Generator._patch_gpu_accel)
+        self.assertIn("self._patch_bake_blend(", src)
+        # `helper = Path(...)` starts the eb_accel copy + early-return block. The call must sit
+        # BEFORE it; fails if someone moves _patch_bake_blend back behind the early-returns.
+        # (Anchoring on the plain "eb_accel.py" literal is wrong here — it also appears in the
+        # method docstring, which precedes the call.)
+        self.assertLess(
+            src.index("self._patch_bake_blend("),
+            src.index('helper = Path(__file__)'))
+
     def test_live_vendored_file_is_patched(self):
         live = Path(r"C:\Users\Shaya\OneDrive\Documents\Modly\models\hunyuan3d-2-1-shape"
                     r"\generate\_hy3dpaint_src\utils\pipeline_utils.py")

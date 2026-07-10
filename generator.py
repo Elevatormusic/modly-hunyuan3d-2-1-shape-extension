@@ -672,6 +672,17 @@ class Hunyuan3DShapeV21Generator(BaseGenerator):
         # Idempotent + a no-op on the already-patched live vendored files.
         self._patch_phase_offload(paint_src)
 
+        # 9. Bake-blend merge (harmonize + EDT-feathered view blend) — applied HERE, BEFORE the
+        # eb_accel early-returns below, because bake_blend imports nothing from eb_accel; if it sat
+        # after those returns (eb_accel missing / copy failure) the merge patch would be silently
+        # skipped and view-handoff frontiers would still render as ragged cliffs. Mirrors the
+        # section-8 hoist above. Copies bake_blend.py next to the paint code and reroutes
+        # ViewProcessor.bake_from_multiview through bake_blend.bake_from_multiview_ex
+        # (EB_BAKE_BLEND=legacy restores stock; the patched body also falls back to the stock merge
+        # on any bake_blend error -> quality only, never correctness). Idempotent; a no-op on the
+        # already-patched live vendored file.
+        self._patch_bake_blend(paint_src)
+
         helper = Path(__file__).resolve().parent / "eb_accel.py"
         if not helper.exists():
             print(f"[{self.MODEL_ID}] eb_accel.py not found next to generator.py; skipping GPU accel")
@@ -896,15 +907,6 @@ class Hunyuan3DShapeV21Generator(BaseGenerator):
                 tgp.write_text(text, encoding="utf-8")
                 print(f"[{self.MODEL_ID}] patched paint-stage progress milestones into textureGenPipeline.py")
 
-        # 9. Bake-blend merge (harmonize + EDT-feathered view blend). Copies bake_blend.py
-        # next to the paint code and reroutes ViewProcessor.bake_from_multiview through
-        # bake_blend.bake_from_multiview_ex so view-handoff frontiers stop showing as ragged
-        # cliffs (EB_BAKE_BLEND=legacy restores stock; the patched body also falls back to the
-        # stock merge on any bake_blend error -> speed/quality only, never correctness).
-        # Placed after the eb_accel copy but INDEPENDENT of it: bake_blend imports nothing from
-        # eb_accel. Idempotent; a no-op on the already-patched live vendored file.
-        self._patch_bake_blend(paint_src)
-
     @staticmethod
     def _patch_bake_blend(paint_src: Path) -> None:
         """Section 9: ship bake_blend.py next to the vendored paint code and reroute
@@ -973,9 +975,13 @@ class Hunyuan3DShapeV21Generator(BaseGenerator):
             "        texture, ori_trust_map = self.render.fast_bake_texture(project_textures, project_weighted_cos_maps)\n"
             "        return texture, ori_trust_map > 1e-8\n"
         )
-        if "bake_blend" not in text and stock in text:
-            pu.write_text(text.replace(stock, new), encoding="utf-8")
-            print("[hunyuan3d-2-1-shape] patched bake-blend merge into pipeline_utils.py")
+        if "bake_blend" not in text:
+            if stock in text:
+                pu.write_text(text.replace(stock, new), encoding="utf-8")
+                print("[hunyuan3d-2-1-shape] patched bake-blend merge into pipeline_utils.py")
+            else:
+                print("[hunyuan3d-2-1-shape] bake-blend anchor not found in pipeline_utils.py; "
+                      "skipping (upstream drift?)")
 
     @staticmethod
     def _patch_phase_offload(paint_src: Path) -> None:
