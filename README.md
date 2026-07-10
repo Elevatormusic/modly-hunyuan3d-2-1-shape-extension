@@ -85,7 +85,7 @@ A prompt like *"product render on a white background, 3/4 view, soft even lighti
 
 <sub>Measured on an RTX 3090 (512 view resolution, 6 views): 20.4 GB full-GPU vs 13.0 GB reduced, quality identical. Higher settings cost more — 768 view resolution adds ~14 GB (turn on **Use shared GPU memory**), and each view above 6 adds ~0.7 GB.</sub>
 
-<sub>The texture pass also needs a one-time C++/CUDA build toolchain (Visual Studio C++ Build Tools + a CUDA toolkit). Shape generation needs none, and if the toolchain is missing, texturing fails with a clear message while shape keeps working.</sub>
+<sub><b>No build tools needed on typical setups:</b> the extension ships prebuilt native modules for Windows + the standard PyTorch it installs (CUDA 12.8), covering RTX 20-series through Hopper natively and newer GPUs via driver JIT. Only if your setup falls outside that (older drivers on the CUDA 12.4 fallback, Linux) does the first texture run compile the modules itself — which then needs a one-time C++/CUDA toolchain (Visual Studio C++ Build Tools + a CUDA toolkit). Either way, shape generation is never affected.</sub>
 
 ---
 
