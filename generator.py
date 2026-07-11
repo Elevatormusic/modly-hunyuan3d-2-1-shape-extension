@@ -560,10 +560,12 @@ class Hunyuan3DShapeV21Generator(BaseGenerator):
         # each falls back to quadric on error. Keep the full-detail mesh as the source
         # for the normal-map bake so cleanup doesn't cost us fine detail.
         import mesh_cleanup
-        import os
         dense_for_bake = mesh
         try:
-            _target = int(os.environ.get("EB_FACE_TARGET", "50000"))
+            try:
+                _target = int(os.environ.get("EB_FACE_TARGET", "50000"))
+            except ValueError:
+                _target = 50000
             mesh = mesh_cleanup.clean_mesh(mesh, mesh_mode, _target)
             print(f"[{self.MODEL_ID}] cleanup mode={mesh_mode} -> {len(mesh.faces)} faces")
         except Exception as exc:
