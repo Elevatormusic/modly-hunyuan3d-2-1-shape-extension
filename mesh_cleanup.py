@@ -129,6 +129,55 @@ def strip_background(mesh) -> trimesh.Trimesh:
     return trimesh.util.concatenate(keep) if len(keep) > 1 else keep[0]
 
 
+def smooth_crevices(mesh, *, k_percentile=8, rings=2, steps=10):
+    """Curvature-masked, non-shrinking Taubin smoothing of concave crevice bands
+    (the MC staircase contact lines). Only strongly-concave vertices move; convex
+    silhouettes are untouched. Honest scope: a mild polish (single-digit-% de-
+    serration per RV) — the geometric fix is the face budget + DMC. Never raises;
+    EB_CREVICE_SMOOTH=off returns the mesh unchanged."""
+    import os
+    if os.environ.get("EB_CREVICE_SMOOTH", "").strip().lower() == "off":
+        return mesh
+    try:
+        import numpy as np
+        import pymeshlab
+        v = np.asarray(mesh.vertices, np.float64)
+        f = np.asarray(mesh.faces, np.int64)
+        if len(f) < 8:
+            return mesh
+        ms = pymeshlab.MeshSet()
+        ms.add_mesh(pymeshlab.Mesh(vertex_matrix=v, face_matrix=f))
+        ms.compute_scalar_by_discrete_curvature_per_vertex(curvaturetype="Mean Curvature")
+        q = ms.current_mesh().vertex_scalar_array()
+        # concave band = low (negative) mean curvature tail; K = |k_percentile pct|
+        thr = float(np.percentile(q, k_percentile))
+        if not np.isfinite(thr):
+            return mesh
+        ms.compute_selection_by_condition_per_vertex(condselect=f"q < {thr!r}")
+        # dilate the VERTEX band via the v->f->dilate->f->v idiom (dilatation acts
+        # on the FACE selection and clears the vertex selection — RV gotcha).
+        ms.compute_selection_transfer_vertex_to_face(inclusive=False)
+        for _ in range(max(0, int(rings))):
+            ms.apply_selection_dilatation()
+        ms.compute_selection_transfer_face_to_vertex(inclusive=True)
+        ms.apply_coord_taubin_smoothing(lambda_=0.5, mu=-0.53,
+                                        stepsmoothnum=int(steps), selected=True)
+        out = ms.current_mesh()
+        import trimesh
+        return trimesh.Trimesh(vertices=out.vertex_matrix(),
+                               faces=out.face_matrix(), process=False)
+    except Exception as exc:
+        print(f"[mesh_cleanup] smooth_crevices masked path failed ({exc}); trying global humphrey")
+        try:
+            import trimesh
+            m2 = mesh.copy()
+            trimesh.smoothing.filter_humphrey(m2, alpha=0.1, beta=0.5, iterations=10)
+            return m2
+        except Exception as exc2:
+            print(f"[mesh_cleanup] smooth_crevices fallback failed ({exc2}); returning input")
+            return mesh
+
+
 def clean_mesh(mesh, mode: str = "regular", target_faces: int = 40000) -> trimesh.Trimesh:
     hi = _as_trimesh(mesh)
     try:
@@ -152,4 +201,7 @@ def clean_mesh(mesh, mode: str = "regular", target_faces: int = 40000) -> trimes
             return hi
     # Repair to a single watertight shell -> one clean UV island (fixes isotropic's
     # fragmentation for good; also helps quadric/bpt). Cheap on the ~50k cleaned mesh.
-    return make_watertight(low)
+    sealed = make_watertight(low)
+    # Curvature-masked crevice polish on the concave MC contact bands (never raises;
+    # EB_CREVICE_SMOOTH=off makes it an identity). All mode paths converge here.
+    return smooth_crevices(sealed)
