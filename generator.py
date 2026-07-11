@@ -226,9 +226,12 @@ class Hunyuan3DShapeV21Generator(BaseGenerator):
 
         try:
             with torch.no_grad():
-                generator = torch.Generator().manual_seed(seed)
                 _algo = self._select_mc_algo()   # 'dmc' if diso is importable else 'mc'
-                try:
+
+                def _extract(algo):
+                    # Re-seed before every attempt so the extraction (and any mc
+                    # fall-back) stays deterministic for a given seed.
+                    generator = torch.Generator().manual_seed(seed)
                     outputs = self._model(
                         image=image,
                         num_inference_steps=num_steps,
@@ -237,28 +240,35 @@ class Hunyuan3DShapeV21Generator(BaseGenerator):
                         num_chunks=8000,
                         generator=generator,
                         output_type="trimesh",
-                        mc_algo=_algo,
+                        mc_algo=algo,
                     )
+                    # The vendored SurfaceExtractor wraps each grid's run() in
+                    # try/except: append(None) — so a DMC failure (CUDA OOM in
+                    # self.dmc(...), or a diso ImportError when EB_MC_ALGO=dmc is
+                    # forced without a working diso) surfaces as outputs=[None]
+                    # with NO exception. Treat that None/empty exactly like a raise.
+                    return outputs[0] if outputs else None
+
+                try:
+                    mesh = _extract(_algo)
                 except Exception as exc:
-                    if _algo == "dmc":
-                        # DMC (diso) failed at runtime — retry once with stock mc.
-                        # Re-seed so the mc fall-back stays deterministic.
-                        print(f"[{self.MODEL_ID}] DMC extraction failed ({exc}); "
-                              "retrying with mc")
-                        generator = torch.Generator().manual_seed(seed)
-                        outputs = self._model(
-                            image=image,
-                            num_inference_steps=num_steps,
-                            octree_resolution=octree_res,
-                            guidance_scale=guidance_scale,
-                            num_chunks=8000,
-                            generator=generator,
-                            output_type="trimesh",
-                            mc_algo="mc",
-                        )
-                    else:
+                    if _algo != "dmc":
                         raise
-            mesh = outputs[0]
+                    # DMC raised — retry once with stock mc (re-seeded in _extract).
+                    print(f"[{self.MODEL_ID}] DMC extraction failed ({exc}); "
+                          "retrying with mc")
+                    mesh = _extract("mc")
+                else:
+                    # DMC can also fail *silently* (swallowed None). Same fall-back.
+                    if mesh is None and _algo == "dmc":
+                        print(f"[{self.MODEL_ID}] DMC extraction returned no mesh; "
+                              "retrying with mc")
+                        mesh = _extract("mc")
+
+                if mesh is None:
+                    # mc also yielded nothing (or the chosen algo was already mc);
+                    # fail with a clear error instead of a downstream NoneType crash.
+                    raise RuntimeError("shape extraction returned no mesh")
         finally:
             stop_evt.set()
 
