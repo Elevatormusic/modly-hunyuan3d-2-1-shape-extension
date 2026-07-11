@@ -118,6 +118,11 @@ class Hunyuan3DShapeV21Generator(BaseGenerator):
 
         self._ensure_hy3dshape()
 
+        # Install the prebuilt diso wheel (DMC dependency) BEFORE shape extraction
+        # so _select_mc_algo() can pick 'dmc'. Guarded; its result is ignored — the
+        # selection re-checks `import diso` and falls back to 'mc' if unavailable.
+        self._ensure_diso()
+
         import torch
         from hy3dshape.pipelines import Hunyuan3DDiTFlowMatchingPipeline
 
@@ -222,17 +227,37 @@ class Hunyuan3DShapeV21Generator(BaseGenerator):
         try:
             with torch.no_grad():
                 generator = torch.Generator().manual_seed(seed)
-                outputs = self._model(
-                    image=image,
-                    num_inference_steps=num_steps,
-                    octree_resolution=octree_res,
-                    guidance_scale=guidance_scale,
-                    num_chunks=8000,
-                    generator=generator,
-                    output_type="trimesh",
-                    mc_algo="mc",   # scikit-image marching cubes; avoids the
-                                    # compile-heavy `diso` needed by the 'dmc' default
-                )
+                _algo = self._select_mc_algo()   # 'dmc' if diso is importable else 'mc'
+                try:
+                    outputs = self._model(
+                        image=image,
+                        num_inference_steps=num_steps,
+                        octree_resolution=octree_res,
+                        guidance_scale=guidance_scale,
+                        num_chunks=8000,
+                        generator=generator,
+                        output_type="trimesh",
+                        mc_algo=_algo,
+                    )
+                except Exception as exc:
+                    if _algo == "dmc":
+                        # DMC (diso) failed at runtime — retry once with stock mc.
+                        # Re-seed so the mc fall-back stays deterministic.
+                        print(f"[{self.MODEL_ID}] DMC extraction failed ({exc}); "
+                              "retrying with mc")
+                        generator = torch.Generator().manual_seed(seed)
+                        outputs = self._model(
+                            image=image,
+                            num_inference_steps=num_steps,
+                            octree_resolution=octree_res,
+                            guidance_scale=guidance_scale,
+                            num_chunks=8000,
+                            generator=generator,
+                            output_type="trimesh",
+                            mc_algo="mc",
+                        )
+                    else:
+                        raise
             mesh = outputs[0]
         finally:
             stop_evt.set()
@@ -1358,6 +1383,69 @@ class Hunyuan3DShapeV21Generator(BaseGenerator):
         """Directory holding the committed prebuilt artifacts. Split out so tests
         can point it at a synthetic bundle."""
         return Path(__file__).resolve().parent / "prebuilt" / self._PREBUILT_DIRNAME
+
+    _PREBUILT_DISO = "diso-0.1.4-cp311-cp311-win_amd64.whl"
+
+    def _select_mc_algo(self):
+        """Choose the surface extractor: 'dmc' (Hunyuan's intended Dual Marching
+        Cubes, smoother contact lines) when the diso module is importable, else
+        stock 'mc' (scikit-image). EB_MC_ALGO=mc|dmc forces a choice (A/B)."""
+        import os
+        forced = os.environ.get("EB_MC_ALGO", "").strip().lower()
+        if forced in ("mc", "dmc"):
+            return forced
+        try:
+            import diso  # noqa: F401
+            return "dmc"
+        except Exception:
+            return "mc"
+
+    def _ensure_diso(self):
+        """Install the prebuilt diso wheel (DMC dependency) if not importable.
+        Runs at load(), BEFORE shape extraction. ABI-gated + sha-checked like
+        _try_prebuilt_extensions; never raises; returns True iff diso imports."""
+        try:
+            import diso  # noqa: F401
+            return True
+        except Exception:
+            pass
+        try:
+            import sys as _sys
+            import subprocess
+            try:
+                import torch
+            except Exception:
+                return False
+            if not (_sys.platform == "win32"
+                    and _sys.version_info[:2] == (3, 11)
+                    and getattr(torch, "__version__", None) == "2.7.0+cu128"):
+                return False
+            bundle = self._prebuilt_bundle_dir()
+            wheel = bundle / self._PREBUILT_DISO
+            provenance = bundle / "PROVENANCE.md"
+            if not (wheel.is_file() and provenance.is_file()):
+                return False
+            want = self._parse_prebuilt_hashes(provenance).get(wheel.name)
+            if not want or self._sha256(wheel) != want:
+                return False
+            r = subprocess.run(
+                [_sys.executable, "-m", "pip", "install", str(wheel),
+                 "--no-deps", "--force-reinstall"],
+                capture_output=True, text=True)
+            if r.returncode != 0:
+                print(f"[{self.MODEL_ID}] prebuilt diso install failed:\n"
+                      f"{(r.stderr or '')[-1500:]}")
+                return False
+            import importlib
+            importlib.invalidate_caches()
+            _sys.modules.pop("diso", None)
+            from diso import DiffDMC  # noqa: F401
+            print(f"[{self.MODEL_ID}] using prebuilt diso (DMC extraction enabled)")
+            return True
+        except Exception as exc:
+            print(f"[{self.MODEL_ID}] diso unavailable ({exc}); "
+                  "DMC disabled, using mc")
+            return False
 
     @staticmethod
     def _sha256(path) -> str:
