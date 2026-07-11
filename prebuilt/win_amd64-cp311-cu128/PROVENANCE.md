@@ -106,3 +106,57 @@ toolkit and MSVC toolset installed):
    provenance matches reality.
 6. `cuobjdump --list-elf` / `--list-ptx` the kernel to confirm the embedded arch
    list, then recompute both sha256s and update this file's Checksums block.
+
+--------------------------------------------------------------------------------
+
+# `diso` — Dual Marching Cubes (DMC) surface extraction
+
+A **separately-licensed** prebuilt shipped in the same ABI bundle so DMC surface
+extraction (Hunyuan's intended, smoother-contact-line extractor) runs with **no
+C++/CUDA build toolchain**. The runtime (`generator._ensure_diso`) installs this
+wheel at `load()` — before shape extraction — under the same exact ABI gate
+(`win32` + `cp311` + torch `2.7.0+cu128`) and sha256 check; any mismatch/failure
+falls back to stock scikit-image `mc`, so nobody is worse off.
+
+> **License notice — this artifact is NOT under the Hunyuan license.** `diso` is
+> **CC BY-NC 4.0** (Creative Commons Attribution-**NonCommercial** 4.0
+> International), © 2023 Xinyue Wei (UCSD). It is redistributed **unmodified**;
+> the verbatim license text is shipped alongside as `diso.LICENSE`. Do not
+> relicense. The NonCommercial restriction passes through to any downstream use.
+
+## Artifact
+
+- **`diso-0.1.4-cp311-cp311-win_amd64.whl`** — a stock `pip wheel` of the
+  **unmodified** upstream `diso` 0.1.4 source distribution (no source patches).
+  It provides `from diso import DiffDMC`, the differentiable Dual Marching Cubes
+  kernel the shape pipeline uses when `mc_algo="dmc"`.
+
+- **version:** 0.1.4
+- **source:** github.com/SarahWeiii/diso (`diso` 0.1.4 sdist, unmodified)
+- **license:** CC BY-NC 4.0 (see `diso.LICENSE`, shipped verbatim)
+
+## Checksum (sha256)
+
+```
+e060f36edf5b79fd4be8d6db4c782e7729ebbf838f2ae78f07321424baf093fa  diso-0.1.4-cp311-cp311-win_amd64.whl
+```
+
+The runtime recomputes this and refuses the prebuilt path on any mismatch
+(corruption → clean fallback to `mc`, never a crash).
+
+## Build inputs (verified, built 2026-07-10 on the dev machine)
+
+- **CPython:** 3.11 (`cp311`).
+- **torch:** 2.7.0+cu128 (the wheel links against this exact torch ABI).
+- **MSVC toolset:** 14.44 (VS2022 BuildTools) via `vcvarsall.bat x64
+  -vcvars_ver=14.44`, `DISTUTILS_USE_SDK=1`, and
+  `NVCC_PREPEND_FLAGS=-allow-unsupported-compiler`.
+- **CUDA toolkit:** 12.4 (nvcc front-end vs the torch cu128 runtime ABI).
+- **`TORCH_CUDA_ARCH_LIST`:** `7.5;8.0;8.6;8.9;9.0+PTX` — Turing (sm_75) →
+  Hopper (sm_90) native SASS + forward-JIT PTX for `sm_90` (same coverage /
+  Blackwell-JIT note as the paint modules above).
+- **Source tree:** unmodified upstream `diso` 0.1.4 sdist (no patches applied).
+
+To rebuild on a torch bump: reinstall the target torch, open the 14.44 toolset
+shell with the env above, `pip wheel diso==0.1.4 --no-build-isolation -w <out>`,
+then recompute the sha256 and update this Checksum block.

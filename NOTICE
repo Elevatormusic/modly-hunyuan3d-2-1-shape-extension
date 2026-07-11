@@ -35,3 +35,18 @@ Tencent Hunyuan 3D 2.1 Community License Agreement and its Acceptable Use Policy
 territorial scope (the license does not apply in the European Union, the United
 Kingdom, or South Korea) and the prohibited-uses list — pass through to you and
 are not waived, narrowed, or added to by this extension.
+
+--------------------------------------------------------------------------------
+
+Third-party component: diso (CC BY-NC 4.0, NonCommercial)
+---------------------------------------------------------
+
+This extension also redistributes a prebuilt wheel of the "Differentiable
+Iso-Surface Extraction Package" (diso), © 2023 Xinyue Wei (UCSD), used for Dual
+Marching Cubes surface extraction. diso is NOT part of the Tencent Hunyuan 3D
+Works and is NOT under the Hunyuan license; it is licensed under Creative Commons
+Attribution-NonCommercial 4.0 International (CC BY-NC 4.0). It is redistributed
+UNMODIFIED (upstream 0.1.4 sdist, github.com/SarahWeiii/diso), with the verbatim
+license text shipped as prebuilt/win_amd64-cp311-cu128/diso.LICENSE and its build
+provenance recorded in prebuilt/win_amd64-cp311-cu128/PROVENANCE.md. The
+NonCommercial restriction of CC BY-NC 4.0 passes through to any downstream use.
