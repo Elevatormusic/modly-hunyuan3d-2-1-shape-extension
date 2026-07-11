@@ -264,4 +264,16 @@ License Agreement and its Acceptable Use Policy — including the territorial
 scope (the license does not apply in the EU, UK, or South Korea) and the
 prohibited-uses list.
 
+### Surface extractor (DMC) &mdash; NonCommercial
+
+The default surface extractor is **Dual Marching Cubes (DMC)**, which gives
+noticeably smoother crevices than classic marching cubes. It is powered by the
+bundled [`diso`](https://github.com/SarahWeiii/diso) wheel in
+[`prebuilt/`](prebuilt/), licensed **CC BY-NC 4.0 (NonCommercial)** &mdash; see
+[`prebuilt/win_amd64-cp311-cu128/diso.LICENSE`](prebuilt/win_amd64-cp311-cu128/diso.LICENSE).
+Running the default DMC path is therefore limited to **non-commercial** use.
+
+For commercial use, set `EB_MC_ALGO=mc` to fall back to classic marching cubes,
+which uses no NonCommercial component (crevices are slightly less smooth).
+
 <div align="center"><sub>A community extension for <a href="https://modly3d.app/">Modly</a>. Not affiliated with Tencent or lightningpixel.</sub></div>

@@ -573,9 +573,9 @@ class Hunyuan3DShapeV21Generator(BaseGenerator):
         dense_for_bake = mesh
         try:
             try:
-                _target = int(os.environ.get("EB_FACE_TARGET", "50000"))
+                _target = int(os.environ.get("EB_FACE_TARGET", "100000"))
             except ValueError:
-                _target = 50000
+                _target = 100000
             mesh = mesh_cleanup.clean_mesh(mesh, mesh_mode, _target)
             print(f"[{self.MODEL_ID}] cleanup mode={mesh_mode} -> {len(mesh.faces)} faces")
         except Exception as exc:
