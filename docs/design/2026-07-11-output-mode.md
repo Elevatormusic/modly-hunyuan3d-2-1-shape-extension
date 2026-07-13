@@ -63,8 +63,12 @@ listed knobs regardless of their UI values. **Custom** changes nothing.
 | face budget | ~100k | ~100k | **~30k quads** (retopo target) | user (`EB_FACE_TARGET`) |
 | game-ready pipeline | — | — | **yes** | — |
 
-Exact values are provisional and confirmed on-device; the bundle is data, kept
-in one pure module so it is trivially reviewable and testable.
+The `saturation` row depends on the separate **vibrance feature (PR #1)**, which
+adds that knob to the schema. The preset layer sets `saturation` **only when the
+knob exists** (it is skipped otherwise), and this row is dropped entirely if
+output-mode is implemented before vibrance merges — so a non-Custom mode never
+writes an unknown key. Exact values are provisional and confirmed on-device; the
+bundle is data, kept in one pure module so it is trivially reviewable and testable.
 
 ## Architecture (Approach A — all-Python, reuse our baker)
 
@@ -120,7 +124,9 @@ generate(params)
 
 Every stage never-raises at its boundary and degrades instead of crashing:
 - Instant Meshes missing/fails → quadric decimation (still baked, not crashed).
-- xatlas fails → fall back to the existing atlas.
+- xatlas fails in game-ready mode → **skip the game-ready pass and return the
+  dense textured GLB**. Never reuse the dense mesh's atlas on the retopo mesh —
+  the topology differs, so the old UVs would misregister and corrupt the transfer.
 - A bake channel fails → attach the channels that succeeded.
 - The whole game-ready pass fails → return the dense textured GLB (today's
   result), never an error to the user. Matches the extension's existing ethos.
