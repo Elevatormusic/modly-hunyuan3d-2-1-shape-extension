@@ -43,6 +43,12 @@ class TestResolveParams(unittest.TestCase):
         self.assertTrue(om.resolve_params("game_ready", {}, SCHEMA).get("_game_ready"))
         self.assertNotIn("_game_ready", om.resolve_params("render_max", {}, SCHEMA))
 
+    def test_game_ready_overrides_leftover_mesh_mode(self):
+        # A stale bpt from a prior Custom run must not survive into game-ready
+        # (it would bake from a ~4k neural mesh instead of a clean 100k source).
+        out = om.resolve_params("game_ready", {"mesh_mode": "bpt"}, SCHEMA)
+        self.assertEqual(out["mesh_mode"], "regular")
+
     def test_does_not_mutate_input(self):
         raw = {"octree_resolution": 256}
         om.resolve_params("render_max", raw, SCHEMA)

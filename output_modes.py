@@ -20,7 +20,7 @@ _BUNDLES = {
     },
     "game_ready": {
         "octree_resolution": 512, "enable_texture": 1, "texture_resolution": 768,
-        "max_num_view": 8, "bake_normal_map": 1, "seam_fix": 1,
+        "max_num_view": 8, "mesh_mode": "regular", "bake_normal_map": 1, "seam_fix": 1,
         "saturation": "subtle", "_face_target": 100000, "_game_ready": True,
     },
 }
