@@ -55,15 +55,21 @@ Test command: `"<clone>/venv/Scripts/python.exe" -m unittest discover -s tests -
 **Files:** Create `output_modes.py`; Test `tests/test_output_modes.py`.
 
 **Interface — Produces:** `resolve_params(output_mode: str, raw: dict, schema_ids: set[str]) -> dict`.
-- Non-Custom modes overlay the bundle below onto a copy of `raw`; a bundle key is
-  written only if it is in `schema_ids` (so `saturation` is set only when the
-  vibrance knob exists). Custom / unknown → return `raw` unchanged.
-- Adds internal `_game_ready: bool` (True only for Game-ready) for the generator.
+- Non-Custom modes overlay the bundle below onto a copy of `raw`. **UI-param
+  keys** are written only if present in `schema_ids` (so `saturation` is set only
+  when the vibrance knob exists); **internal directive keys** (`_game_ready`,
+  `_face_target`) are ALWAYS written and consumed by the generator directly, not
+  through the schema. Custom / unknown → return `raw` unchanged.
+- `_face_target` (int) is the authoritative face budget for the mode; the
+  generator uses it in place of the `EB_FACE_TARGET` env var (see Task 5).
 
 **Bundles** (from the merged spec table):
-- `render_max`: octree 512, enable_texture 1, texture_resolution 768, max_num_view 8, mesh_mode regular, bake_normal_map 1, seam_fix 1, saturation subtle, EB_FACE_TARGET 100000.
-- `render_balanced`: octree 384, enable_texture 1, texture_resolution 512, max_num_view 6, mesh_mode regular, bake_normal_map 1, seam_fix 1, saturation subtle, EB_FACE_TARGET 100000.
-- `game_ready`: octree 512, enable_texture 1, texture_resolution 768, max_num_view 8, bake_normal_map 1, seam_fix 1, saturation subtle, `_game_ready` True.
+- `render_max`: octree 512, enable_texture 1, texture_resolution 768, max_num_view 8, mesh_mode regular, bake_normal_map 1, seam_fix 1, saturation subtle*, `_face_target` 100000.
+- `render_balanced`: octree 384, enable_texture 1, texture_resolution 512, max_num_view 6, mesh_mode regular, bake_normal_map 1, seam_fix 1, saturation subtle*, `_face_target` 100000.
+- `game_ready`: octree 512, enable_texture 1, texture_resolution 768, max_num_view 8, bake_normal_map 1, seam_fix 1, saturation subtle*, `_face_target` 100000, `_game_ready` True.
+
+(`saturation`* = a UI-param key, written only if in `schema_ids`; `_face_target`
+and `_game_ready` are internal directive keys, always written.)
 - `custom`: passthrough.
 
 **TDD:**
@@ -158,6 +164,11 @@ Modify `manifest.json`; Test `tests/test_output_mode_param.py`,
 
 **Details:**
 - In `generate()`: `params = output_modes.resolve_params(params.get("output_mode","custom"), params, {p["id"] for p in self.params_schema()})` before reading the individual knobs. Read `_game_ready = bool(params.get("_game_ready"))`.
+- **Face budget:** pass `face_target=params.get("_face_target")` into `_run_texture`
+  (new `face_target: int | None = None` param). The texture cleanup then computes
+  `_target = face_target or int(os.environ.get("EB_FACE_TARGET", "100000"))` — a
+  preset's `_face_target` is authoritative, while `EB_FACE_TARGET` still governs
+  Custom mode. This replaces the current direct `os.environ` read at the cleanup site.
 - After the textured GLB is finished (post `finishing.finish`), if `_game_ready`,
   route through `game_ready.to_game_ready(out_path, target_triangles, tex_size)`
   and return that path. `target_triangles` from `EB_GAMEREADY_FACES` (default 30000).
@@ -168,6 +179,7 @@ Modify `manifest.json`; Test `tests/test_output_mode_param.py`,
 **TDD:**
 - [ ] Test: `output_mode` present in both manifest and generator schema, default `custom`, at index 0.
 - [ ] Test: `resolve_params("render_max", …)` applied in `generate()` overrides octree/texture knobs (unit-level on the pure function + a wiring assert).
+- [ ] Test: `_run_texture` accepts `face_target`; the cleanup uses it over `EB_FACE_TARGET` (a preset's `_face_target` wins even when the env var is set to a different value; Custom with no `_face_target` falls back to the env/default).
 - [ ] Test: game-ready routing calls `game_ready.to_game_ready` (monkeypatched) when `_game_ready`, not otherwise.
 - [ ] Implement; run; commit.
 
