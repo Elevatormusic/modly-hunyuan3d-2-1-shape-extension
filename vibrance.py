@@ -94,7 +94,13 @@ def apply_vibrance(img, strength):
             out8 = np.concatenate([out8, alpha], -1)
         if is_pil:
             from PIL import Image
-            return Image.fromarray(out8, mode)
+            out_img = Image.fromarray(out8, mode)
+            # Preserve the source encoding (e.g. JPEG). Image.fromarray sets
+            # format=None, which makes trimesh's export re-encode as PNG and
+            # bloats the GLB ~10x for JPEG albedo — the same reason seam_fix
+            # carries img.format forward.
+            out_img.format = getattr(img, "format", None)
+            return out_img
         return out8
     except Exception as exc:
         _log(f"[vibrance] skipped ({exc})")
@@ -115,7 +121,9 @@ def apply_to_glb(glb_path, strength):
             img = getattr(mat, "baseColorTexture", None) if mat else None
             if img is None:
                 continue
-            mat.baseColorTexture = apply_vibrance(img.convert(img.mode), strength)
+            # Pass img straight through so apply_vibrance can carry its
+            # .format forward (a .convert() here would drop it -> PNG bloat).
+            mat.baseColorTexture = apply_vibrance(img, strength)
             changed = True
         if changed:
             scene.export(glb_path)

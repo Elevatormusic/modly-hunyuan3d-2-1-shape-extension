@@ -88,6 +88,13 @@ class TestVibrance(unittest.TestCase):
         out = vibrance.apply_vibrance(im, 0.3)
         self.assertIsInstance(out, Image.Image)
 
+    def test_pil_format_preserved(self):
+        # JPEG albedo must stay JPEG; format=None makes trimesh re-encode as
+        # PNG and bloats the GLB ~10x (Codex P2 on PR #1).
+        im = Image.fromarray(np.full((8, 8, 3), 100, np.uint8), "RGB")
+        im.format = "JPEG"
+        self.assertEqual(vibrance.apply_vibrance(im, 0.3).format, "JPEG")
+
     def test_never_raises_on_bad_input(self):
         self.assertEqual(vibrance.apply_vibrance("not an image", 0.3), "not an image")
 
