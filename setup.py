@@ -25,6 +25,10 @@ import sys
 from pathlib import Path
 
 
+# NOTE: these torch 2.5.1 aarch64 wheels predate the fix for GHSA-53q9-r3pm-6pq6
+# (fixed in 2.6.0). This ARM64 / CUDA-12.4 path is niche; migrate to verified
+# 2.6+ aarch64 wheels — or to ARM64_CU128_WHEELS (torch 2.7.0, below) — once their
+# sha256s are confirmed. The primary Windows target already installs 2.7.0/cu128.
 ARM64_CU124_WHEELS = {
     "cp310": {
         "torch":       "https://download-r2.pytorch.org/whl/cu124/torch-2.5.1-cp310-cp310-linux_aarch64.whl#sha256=d468d0eddc188aa3c1e417ec24ce615c48c0c3f592b0354d9d3b99837ef5faa6",
@@ -155,8 +159,9 @@ def setup(
         pip(venv, "install", "torch==2.6.0", "torchvision==0.21.0",
             "--index-url", "https://download.pytorch.org/whl/cu124")
     else:
-        print(f"[setup] GPU SM {gpu_sm} (legacy) -> PyTorch 2.5 + CUDA 11.8")
-        pip(venv, "install", "torch==2.5.1", "torchvision==0.20.1",
+        # 2.6.0 (not 2.5.1) — 2.5.1 predates the fix for GHSA-53q9-r3pm-6pq6.
+        print(f"[setup] GPU SM {gpu_sm} (legacy) -> PyTorch 2.6 + CUDA 11.8")
+        pip(venv, "install", "torch==2.6.0", "torchvision==0.21.0",
             "--index-url", "https://download.pytorch.org/whl/cu118")
 
     # ------------------------------------------------------------------ #
