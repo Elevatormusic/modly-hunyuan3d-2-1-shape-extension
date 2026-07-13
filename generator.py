@@ -317,20 +317,24 @@ class Hunyuan3DShapeV21Generator(BaseGenerator):
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
 
-            self._check_cancelled(cancel_event)
-            self._run_texture(
-                mesh, image, str(path),
-                tex_resolution=tex_resolution, max_num_view=max_num_view,
-                progress_cb=progress_cb,
-                mesh_mode=mesh_mode, bake_normal_map=bake_normal,
-                texture_memory=texture_memory,
-                use_shared_vram=use_shared_vram,
-                seam_fix=seam_fix,
-                debug_sheet=debug_sheet,
-                face_target=face_target,
-                game_ready=game_ready_mode,
-            )
-            self.load()  # restore shape model for the next run
+            try:
+                self._check_cancelled(cancel_event)
+                self._run_texture(
+                    mesh, image, str(path),
+                    tex_resolution=tex_resolution, max_num_view=max_num_view,
+                    progress_cb=progress_cb,
+                    mesh_mode=mesh_mode, bake_normal_map=bake_normal,
+                    texture_memory=texture_memory,
+                    use_shared_vram=use_shared_vram,
+                    seam_fix=seam_fix,
+                    debug_sheet=debug_sheet,
+                    face_target=face_target,
+                    game_ready=game_ready_mode,
+                )
+            finally:
+                # Restore the shape model even if paint raises or is cancelled,
+                # so the next generation isn't left with self._model = None.
+                self.load()
         else:
             self._report(progress_cb, 96, "Exporting GLB…")
             mesh.export(str(path))
@@ -1827,7 +1831,7 @@ class Hunyuan3DShapeV21Generator(BaseGenerator):
                 "label": "Seed",
                 "type": "int",
                 "default": -1,
-                "min": 0,
+                "min": -1,
                 "max": 4294967295,
                 "tooltip": "Seed for reproducibility. Click shuffle for a random seed.",
             },

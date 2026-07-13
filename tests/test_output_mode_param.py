@@ -54,6 +54,13 @@ class TestOutputModeParam(unittest.TestCase):
         m = {o["value"] for o in self._manifest_params()[0]["options"]}
         self.assertEqual(s, m)
 
+    def test_seed_min_allows_random_sentinel(self):
+        s = {p["id"]: p for p in self._schema()}["seed"]
+        m = {p["id"]: p for p in self._manifest_params()}["seed"]
+        self.assertEqual(s["min"], -1)          # was 0, contradicting default -1
+        self.assertEqual(s["min"], m["min"])    # schema and manifest agree
+        self.assertLessEqual(s["min"], s["default"])
+
     def test_run_texture_accepts_face_target_and_game_ready(self):
         _install_services_stub()
         from generator import Hunyuan3DShapeV21Generator as G
