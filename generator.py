@@ -187,6 +187,7 @@ class Hunyuan3DShapeV21Generator(BaseGenerator):
         texture_memory = str(params.get("texture_memory", "auto"))
         use_shared_vram = int(params.get("use_shared_vram", 0)) == 1
         seam_fix       = int(params.get("seam_fix", 1)) == 1
+        saturation     = str(params.get("saturation", "subtle"))
         debug_sheet    = int(params.get("debug_sheet", 0)) == 1
         seed           = int(params.get("seed", -1))
         if seed == -1:
@@ -317,6 +318,7 @@ class Hunyuan3DShapeV21Generator(BaseGenerator):
                 texture_memory=texture_memory,
                 use_shared_vram=use_shared_vram,
                 seam_fix=seam_fix,
+                saturation=saturation,
                 debug_sheet=debug_sheet,
             )
             self.load()  # restore shape model for the next run
@@ -466,6 +468,7 @@ class Hunyuan3DShapeV21Generator(BaseGenerator):
         texture_memory: str = "auto",
         use_shared_vram: bool = False,
         seam_fix: bool = True,
+        saturation: str = "subtle",
         debug_sheet: bool = False,
     ) -> None:
         """
@@ -635,12 +638,14 @@ class Hunyuan3DShapeV21Generator(BaseGenerator):
             # bake -> structural validation -> QA debug sheet. Each stage is
             # non-fatal; finishing.finish() never raises, so the paint ships.
             import finishing
+            import vibrance
             finishing.finish(
                 out_path, tex_obj,
                 dense_mesh=dense_for_bake, texture_size=_plan.texture_size,
                 mesh_mode=mesh_mode, bake_normal_map=bake_normal_map,
                 seam_fix=seam_fix, debug_sheet=debug_sheet,
                 input_image_path=str(in_png),
+                saturation_strength=vibrance.STRENGTH_MAP.get(saturation, 0.18),
                 report=(lambda p, l: self._report(progress_cb, p, l)) if progress_cb else None,
             )
         finally:
