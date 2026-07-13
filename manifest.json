@@ -165,6 +165,19 @@
           "tooltip": "Reconcile UV-seam color jumps in the baked texture so island edges don't show hard color breaks. On by default; turn off for the raw bake. Only applies when textures are on."
         },
         {
+          "id": "saturation",
+          "label": "Texture saturation",
+          "type": "select",
+          "default": "subtle",
+          "options": [
+            { "value": "off", "label": "Off (no boost)" },
+            { "value": "subtle", "label": "Subtle (default)" },
+            { "value": "medium", "label": "Medium" },
+            { "value": "strong", "label": "Strong" }
+          ],
+          "tooltip": "Boosts muted colors while protecting already-vivid ones (perceptual Oklab vibrance). Affects the color/albedo map only; ignored for shape-only exports."
+        },
+        {
           "id": "debug_sheet",
           "label": "QA debug sheet",
           "type": "select",
