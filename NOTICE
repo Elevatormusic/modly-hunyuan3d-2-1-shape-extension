@@ -50,3 +50,19 @@ UNMODIFIED (upstream 0.1.4 sdist, github.com/SarahWeiii/diso), with the verbatim
 license text shipped as prebuilt/win_amd64-cp311-cu128/diso.LICENSE and its build
 provenance recorded in prebuilt/win_amd64-cp311-cu128/PROVENANCE.md. The
 NonCommercial restriction of CC BY-NC 4.0 passes through to any downstream use.
+
+--------------------------------------------------------------------------------
+
+Third-party component: Instant Meshes (BSD-3-Clause)
+----------------------------------------------------
+
+This extension redistributes a prebuilt Windows x64 binary of Instant Meshes,
+© 2015 Wenzel Jakob, Daniele Panozzo, Marco Tarini, and Olga Sorkine-Hornung,
+used (optionally) for quad-dominant retopology in the game-ready output mode.
+Instant Meshes is NOT part of the Tencent Hunyuan 3D Works; it is licensed under
+the BSD 3-Clause License, which permits binary redistribution provided the
+copyright notice and license text are reproduced. The binary is redistributed
+UNMODIFIED (upstream release, github.com/wjakob/instant-meshes) with the verbatim
+license shipped as vendor/instant-meshes/LICENSE.txt and its source URL + SHA256
+recorded in vendor/instant-meshes/PROVENANCE.md. When the binary is absent the
+extension falls back to a pymeshlab retopo path, so it is not required.

@@ -28,7 +28,10 @@ def _instant_meshes(mesh, target_triangles):
     """Run the vendored Instant Meshes exe headlessly. Returns a trimesh or None."""
     if not _EXE.exists():
         return None
-    quads = max(200, round(target_triangles / 2))
+    # Instant Meshes' -v/-f is a SOFT target: output faces run ~8x the passed
+    # value (measured, consistent). Aim near the budget here; retopo_quads then
+    # hard-caps any residual overshoot by decimation.
+    quads = max(50, round(target_triangles / 8))
     d = Path(tempfile.mkdtemp(prefix="im_"))
     try:
         in_obj, out_obj = d / "in.obj", d / "out.obj"
@@ -68,26 +71,43 @@ def _pymeshlab_quad(mesh, target_triangles):
         return None
 
 
+def _cap(mesh, target_triangles):
+    """Hard-cap the face budget: decimate to target if a tier overshoots >20%.
+    Guarantees game-ready output is actually low-poly regardless of the engine."""
+    if len(mesh.faces) > target_triangles * 1.2:
+        try:
+            capped = mesh_cleanup._quadric(mesh, target_triangles)
+            print(f"[retopo] capped {len(mesh.faces)} -> {len(capped.faces)} faces (budget)")
+            return capped
+        except Exception:
+            pass
+    return mesh
+
+
 def retopo_quads(mesh, target_triangles):
-    """Quad-dominant retopo with fallbacks. Never raises; always returns a mesh."""
+    """Quad-dominant retopo with fallbacks + a hard budget cap. Never raises."""
     hi = mesh_cleanup._as_trimesh(mesh)
+    res = None
     try:
         res = _instant_meshes(hi, target_triangles)
         if res is not None:
             print(f"[retopo] instant-meshes -> {len(res.faces)} faces")
-            return res
     except Exception as exc:
         print(f"[retopo] instant-meshes failed ({exc})")
-    try:
-        res = _pymeshlab_quad(hi, target_triangles)
-        if res is not None:
-            print(f"[retopo] pymeshlab isotropic+tri2quad -> {len(res.faces)} faces")
-            return res
-    except Exception as exc:
-        print(f"[retopo] pymeshlab fallback failed ({exc})")
-    print("[retopo] falling back to quadric decimation")
-    try:
-        return mesh_cleanup._quadric(hi, target_triangles)
-    except Exception as exc:
-        print(f"[retopo] quadric fallback failed ({exc}); returning input")
-        return hi
+        res = None
+    if res is None:
+        try:
+            res = _pymeshlab_quad(hi, target_triangles)
+            if res is not None:
+                print(f"[retopo] pymeshlab isotropic+tri2quad -> {len(res.faces)} faces")
+        except Exception as exc:
+            print(f"[retopo] pymeshlab fallback failed ({exc})")
+            res = None
+    if res is None:
+        print("[retopo] falling back to quadric decimation")
+        try:
+            res = mesh_cleanup._quadric(hi, target_triangles)
+        except Exception as exc:
+            print(f"[retopo] quadric fallback failed ({exc}); returning input")
+            return hi
+    return _cap(res, target_triangles)

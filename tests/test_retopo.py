@@ -7,10 +7,11 @@ import retopo
 
 class TestRetopo(unittest.TestCase):
     def test_fallback_when_exe_absent(self):
-        # The exe isn't vendored during tests, so this exercises the pymeshlab /
-        # quadric fallback and must still return a non-empty mesh.
+        # Force the exe absent (it's vendored now) so this genuinely exercises
+        # the pymeshlab / quadric fallback and still returns a non-empty mesh.
         m = trimesh.creation.icosphere(subdivisions=4)  # ~5120 faces
-        out = retopo.retopo_quads(m, 800)
+        with mock.patch.object(retopo, "_EXE", Path("/no/such/Instant Meshes.exe")):
+            out = retopo.retopo_quads(m, 800)
         self.assertGreater(len(out.faces), 0)
 
     def test_never_raises_all_fail(self):
@@ -19,7 +20,7 @@ class TestRetopo(unittest.TestCase):
             out = retopo.retopo_quads(trimesh.creation.box(), 100)
             self.assertGreater(len(out.faces), 0)  # quadric / raw last resort
 
-    def test_quad_target_is_half_triangles(self):
+    def test_instant_meshes_target_and_flags(self):
         captured = {}
 
         def fake_run(cmd, **kw):
@@ -36,8 +37,9 @@ class TestRetopo(unittest.TestCase):
                  mock.patch.object(retopo.subprocess, "run", side_effect=fake_run):
                 retopo.retopo_quads(trimesh.creation.box(), 3000)
         cmd = captured["cmd"]
-        self.assertEqual(cmd[cmd.index("-v") + 1], str(round(3000 / 2)))  # 1500 quads
-        self.assertIn("-d", cmd)  # deterministic
+        # -v is aimed at ~target/8 (IM's soft-target ~8x overshoot); -d deterministic
+        self.assertEqual(cmd[cmd.index("-v") + 1], str(round(3000 / 8)))  # 375
+        self.assertIn("-d", cmd)
 
 
 if __name__ == "__main__":
