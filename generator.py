@@ -174,6 +174,15 @@ class Hunyuan3DShapeV21Generator(BaseGenerator):
         cancel_event: Optional[threading.Event] = None,
     ) -> Path:
         import torch
+        import output_modes
+        # A non-Custom output mode overlays the knob bundle BEFORE the individual
+        # knobs are read below, so the preset is authoritative. Internal directive
+        # keys (_game_ready, _face_target) are consumed here, not by the schema.
+        params = output_modes.resolve_params(
+            params.get("output_mode", "custom"), params,
+            {p["id"] for p in self.params_schema()})
+        game_ready_mode = bool(params.get("_game_ready"))
+        face_target     = params.get("_face_target")
 
         num_steps      = int(params.get("num_inference_steps", 50))
         octree_res     = int(params.get("octree_resolution", 384))
@@ -309,19 +318,25 @@ class Hunyuan3DShapeV21Generator(BaseGenerator):
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
 
-            self._check_cancelled(cancel_event)
-            self._run_texture(
-                mesh, image, str(path),
-                tex_resolution=tex_resolution, max_num_view=max_num_view,
-                progress_cb=progress_cb,
-                mesh_mode=mesh_mode, bake_normal_map=bake_normal,
-                texture_memory=texture_memory,
-                use_shared_vram=use_shared_vram,
-                seam_fix=seam_fix,
-                saturation=saturation,
-                debug_sheet=debug_sheet,
-            )
-            self.load()  # restore shape model for the next run
+            try:
+                self._check_cancelled(cancel_event)
+                self._run_texture(
+                    mesh, image, str(path),
+                    tex_resolution=tex_resolution, max_num_view=max_num_view,
+                    progress_cb=progress_cb,
+                    mesh_mode=mesh_mode, bake_normal_map=bake_normal,
+                    texture_memory=texture_memory,
+                    use_shared_vram=use_shared_vram,
+                    seam_fix=seam_fix,
+                    saturation=saturation,
+                    debug_sheet=debug_sheet,
+                    face_target=face_target,
+                    game_ready=game_ready_mode,
+                )
+            finally:
+                # Restore the shape model even if paint raises or is cancelled,
+                # so the next generation isn't left with self._model = None.
+                self.load()
         else:
             self._report(progress_cb, 96, "Exporting GLB…")
             mesh.export(str(path))
@@ -470,6 +485,8 @@ class Hunyuan3DShapeV21Generator(BaseGenerator):
         seam_fix: bool = True,
         saturation: str = "subtle",
         debug_sheet: bool = False,
+        face_target=None,
+        game_ready: bool = False,
     ) -> None:
         """
         Paint PBR textures onto the shape mesh and write a textured GLB to
@@ -576,8 +593,8 @@ class Hunyuan3DShapeV21Generator(BaseGenerator):
         dense_for_bake = mesh
         try:
             try:
-                _target = int(os.environ.get("EB_FACE_TARGET", "100000"))
-            except ValueError:
+                _target = int(face_target) if face_target else int(os.environ.get("EB_FACE_TARGET", "100000"))
+            except (ValueError, TypeError):
                 _target = 100000
             mesh = mesh_cleanup.clean_mesh(mesh, mesh_mode, _target)
             print(f"[{self.MODEL_ID}] cleanup mode={mesh_mode} -> {len(mesh.faces)} faces")
@@ -648,6 +665,23 @@ class Hunyuan3DShapeV21Generator(BaseGenerator):
                 saturation_strength=vibrance.STRENGTH_MAP.get(saturation, 0.18),
                 report=(lambda p, l: self._report(progress_cb, p, l)) if progress_cb else None,
             )
+            # Game-ready output: quad retopo + baked low-poly maps replace the
+            # dense textured GLB in place. Non-fatal — on failure to_game_ready
+            # returns the dense GLB and we keep it.
+            if game_ready:
+                try:
+                    import game_ready as _gr
+                    try:
+                        _gt = int(os.environ.get("EB_GAMEREADY_FACES", "30000"))
+                    except ValueError:
+                        _gt = 30000
+                    _grp = _gr.to_game_ready(out_path, target_triangles=_gt,
+                                             tex_size=_plan.texture_size)
+                    if _grp and _grp != out_path and os.path.exists(_grp):
+                        os.replace(_grp, out_path)
+                        print(f"[{self.MODEL_ID}] game-ready GLB -> {out_path}")
+                except Exception as exc:
+                    print(f"[{self.MODEL_ID}] game-ready step skipped ({exc})")
         finally:
             try:
                 import eb_accel
@@ -1738,6 +1772,19 @@ class Hunyuan3DShapeV21Generator(BaseGenerator):
     def params_schema(cls) -> list:
         return [
             {
+                "id": "output_mode",
+                "label": "Output mode",
+                "type": "select",
+                "default": "custom",
+                "options": [
+                    {"value": "custom", "label": "Custom (use the knobs below)"},
+                    {"value": "render_balanced", "label": "Render – Balanced"},
+                    {"value": "render_max", "label": "Render – Max detail"},
+                    {"value": "game_ready", "label": "Game-ready (quad retopo + baked maps)"},
+                ],
+                "tooltip": "Pick the kind of asset. Non-Custom modes set the knobs below for you: Render presets tune detail/texture; Game-ready produces a clean low-poly mesh with quad retopology and baked normal/AO + transferred PBR. Custom leaves every knob under your control.",
+            },
+            {
                 "id": "num_inference_steps",
                 "label": "Quality",
                 "type": "select",
@@ -1789,7 +1836,7 @@ class Hunyuan3DShapeV21Generator(BaseGenerator):
                 "label": "Seed",
                 "type": "int",
                 "default": -1,
-                "min": 0,
+                "min": -1,
                 "max": 4294967295,
                 "tooltip": "Seed for reproducibility. Click shuffle for a random seed.",
             },

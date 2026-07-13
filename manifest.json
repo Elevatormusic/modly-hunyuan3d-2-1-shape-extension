@@ -21,6 +21,19 @@
       ],
       "params_schema": [
         {
+          "id": "output_mode",
+          "label": "Output mode",
+          "type": "select",
+          "default": "custom",
+          "options": [
+            { "value": "custom", "label": "Custom (use the knobs below)" },
+            { "value": "render_balanced", "label": "Render – Balanced" },
+            { "value": "render_max", "label": "Render – Max detail" },
+            { "value": "game_ready", "label": "Game-ready (quad retopo + baked maps)" }
+          ],
+          "tooltip": "Pick the kind of asset. Non-Custom modes set the knobs below for you: Render presets tune detail/texture; Game-ready produces a clean low-poly mesh with quad retopology and baked normal/AO + transferred PBR. Custom leaves every knob under your control."
+        },
+        {
           "id": "num_inference_steps",
           "label": "Quality",
           "type": "select",

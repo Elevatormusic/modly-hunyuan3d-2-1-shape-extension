@@ -13,8 +13,9 @@ class TestProvisionReadiness(unittest.TestCase):
 
     def test_ready_with_matching_sentinel_and_weight(self):
         with tempfile.TemporaryDirectory() as d:
-            os.makedirs(os.path.join(d, "venv", "Scripts"))
-            open(os.path.join(d, "venv", "Scripts", "python.exe"), "wb").close()
+            py = provision.venv_python(d)
+            os.makedirs(os.path.dirname(py))
+            open(py, "wb").close()
             wpath = os.path.join(d, "weights", "bpt-8-16-500m.pt")
             os.makedirs(os.path.dirname(wpath))
             with open(wpath, "wb") as f:
@@ -25,8 +26,9 @@ class TestProvisionReadiness(unittest.TestCase):
 
     def test_not_ready_with_short_weight(self):
         with tempfile.TemporaryDirectory() as d:
-            os.makedirs(os.path.join(d, "venv", "Scripts"))
-            open(os.path.join(d, "venv", "Scripts", "python.exe"), "wb").close()
+            py = provision.venv_python(d)
+            os.makedirs(os.path.dirname(py))
+            open(py, "wb").close()
             wpath = os.path.join(d, "weights", "bpt-8-16-500m.pt")
             os.makedirs(os.path.dirname(wpath))
             with open(wpath, "wb") as f:

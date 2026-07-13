@@ -6,6 +6,7 @@ downloaded to bpt_runner/weights. Both are gitignored and multi-GB.
 """
 from __future__ import annotations
 import os
+import sys
 import json
 import subprocess
 
@@ -14,18 +15,22 @@ VENV_DIR = os.path.join(_HERE, "venv")
 WEIGHTS = os.path.join(_HERE, "weights", "bpt-8-16-500m.pt")
 SENTINEL = os.path.join(_HERE, "provisioned.json")
 WEIGHT_BYTES = 1_636_512_878
-BASE_PY = r"C:\Users\Shaya\OneDrive\Documents\Modly\dependencies\venv\Scripts\python.exe"
+# Base interpreter used to create the isolated BPT venv. Derived from the running
+# extension Python so provisioning works on any machine (was hard-coded to one
+# developer's path before, which broke BPT for every other user).
+BASE_PY = sys.executable
 DEPS = ["trimesh", "pyyaml", "numpy==1.26.4", "tqdm", "einops",
         "x-transformers==1.26.6", "beartype", "omegaconf", "networkx", "scipy",
         "scikit-image", "transformers", "pytorch-custom-utils==0.0.21", "six"]
 
 
 def venv_python(root=_HERE):
-    return os.path.join(root, "venv", "Scripts", "python.exe")
+    sub = ("Scripts", "python.exe") if os.name == "nt" else ("bin", "python")
+    return os.path.join(root, "venv", *sub)
 
 
 def _is_ready(root=_HERE, weight_bytes=WEIGHT_BYTES):
-    py = os.path.join(root, "venv", "Scripts", "python.exe")
+    py = venv_python(root)
     w = os.path.join(root, "weights", "bpt-8-16-500m.pt")
     s = os.path.join(root, "provisioned.json")
     if not (os.path.exists(py) and os.path.exists(w) and os.path.exists(s)):
