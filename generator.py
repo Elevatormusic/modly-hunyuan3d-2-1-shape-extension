@@ -196,6 +196,7 @@ class Hunyuan3DShapeV21Generator(BaseGenerator):
         texture_memory = str(params.get("texture_memory", "auto"))
         use_shared_vram = int(params.get("use_shared_vram", 0)) == 1
         seam_fix       = int(params.get("seam_fix", 1)) == 1
+        saturation     = str(params.get("saturation", "subtle"))
         debug_sheet    = int(params.get("debug_sheet", 0)) == 1
         seed           = int(params.get("seed", -1))
         if seed == -1:
@@ -327,6 +328,7 @@ class Hunyuan3DShapeV21Generator(BaseGenerator):
                     texture_memory=texture_memory,
                     use_shared_vram=use_shared_vram,
                     seam_fix=seam_fix,
+                    saturation=saturation,
                     debug_sheet=debug_sheet,
                     face_target=face_target,
                     game_ready=game_ready_mode,
@@ -481,6 +483,7 @@ class Hunyuan3DShapeV21Generator(BaseGenerator):
         texture_memory: str = "auto",
         use_shared_vram: bool = False,
         seam_fix: bool = True,
+        saturation: str = "subtle",
         debug_sheet: bool = False,
         face_target=None,
         game_ready: bool = False,
@@ -652,12 +655,14 @@ class Hunyuan3DShapeV21Generator(BaseGenerator):
             # bake -> structural validation -> QA debug sheet. Each stage is
             # non-fatal; finishing.finish() never raises, so the paint ships.
             import finishing
+            import vibrance
             finishing.finish(
                 out_path, tex_obj,
                 dense_mesh=dense_for_bake, texture_size=_plan.texture_size,
                 mesh_mode=mesh_mode, bake_normal_map=bake_normal_map,
                 seam_fix=seam_fix, debug_sheet=debug_sheet,
                 input_image_path=str(in_png),
+                saturation_strength=vibrance.STRENGTH_MAP.get(saturation, 0.18),
                 report=(lambda p, l: self._report(progress_cb, p, l)) if progress_cb else None,
             )
             # Game-ready output: quad retopo + baked low-poly maps replace the
@@ -1922,6 +1927,19 @@ class Hunyuan3DShapeV21Generator(BaseGenerator):
                     {"value": 0, "label": "No (raw bake)"},
                 ],
                 "tooltip": "Reconcile UV-seam color jumps in the baked texture so island edges don't show hard color breaks. On by default; turn off for the raw bake. Only applies when textures are on.",
+            },
+            {
+                "id": "saturation",
+                "label": "Texture saturation",
+                "type": "select",
+                "default": "subtle",
+                "options": [
+                    {"value": "off", "label": "Off (no boost)"},
+                    {"value": "subtle", "label": "Subtle (default)"},
+                    {"value": "medium", "label": "Medium"},
+                    {"value": "strong", "label": "Strong"},
+                ],
+                "tooltip": "Boosts muted colors while protecting already-vivid ones (perceptual Oklab vibrance). Affects the color/albedo map only; ignored for shape-only exports.",
             },
             {
                 "id": "debug_sheet",

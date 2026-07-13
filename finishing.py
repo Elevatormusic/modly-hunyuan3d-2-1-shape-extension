@@ -19,7 +19,7 @@ def _log(msg):
 
 def finish(glb_path, obj_path, *, dense_mesh, texture_size, mesh_mode,
            bake_normal_map=False, seam_fix=True, debug_sheet=False,
-           input_image_path=None, report=None):
+           input_image_path=None, report=None, saturation_strength=0.0):
     def _report(pct, label):
         if report:
             try:
@@ -27,8 +27,8 @@ def finish(glb_path, obj_path, *, dense_mesh, texture_size, mesh_mode,
             except Exception:
                 pass
 
-    rep = {"seam_fix": "off", "normals": "off", "bake": "off", "validate": "off",
-           "debug_sheet": "off"}
+    rep = {"seam_fix": "off", "normals": "off", "vibrance": "off", "bake": "off",
+           "validate": "off", "debug_sheet": "off"}
 
     # 1. seam reconcile (albedo + MR), in place
     if seam_fix:
@@ -56,6 +56,19 @@ def finish(glb_path, obj_path, *, dense_mesh, texture_size, mesh_mode,
     except Exception as exc:
         rep["normals"] = f"skipped ({exc})"
         _log(f"[finishing] smooth normals skipped ({exc})")
+
+    # 1c. albedo vibrance (baseColor only) — after seam_fix (last texture
+    # mutation), before validate/QA so the shipped + inspected GLB reflect it.
+    # Gated by saturation_strength (0 = off). Non-fatal.
+    if saturation_strength and saturation_strength > 0.0:
+        try:
+            import vibrance
+            _report(94, "Boosting texture saturation...")
+            ok = vibrance.apply_to_glb(glb_path, saturation_strength)
+            rep["vibrance"] = "ok" if ok else "skipped"
+        except Exception as exc:
+            rep["vibrance"] = f"skipped ({exc})"
+            _log(f"[finishing] vibrance skipped ({exc})")
 
     # 2. normal bake (default OFF), same gate + BPT skip as the old inline tail
     try:
