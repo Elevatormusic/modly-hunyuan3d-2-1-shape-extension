@@ -225,7 +225,7 @@ def setup(
     print("[setup] Installing texture runtime deps … (best-effort)")
     # NB: bpy (Blender) intentionally omitted — it's a huge, version-pinned build
     # that often fails to load; the pipeline is patched to use trimesh instead.
-    for pkg in ("xatlas", "open3d", "realesrgan==0.3.0", "basicsr==1.4.2"):
+    for pkg in ("xatlas", "open3d", "embreex", "realesrgan==0.3.0", "basicsr==1.4.2"):
         try:
             pip(venv, "install", pkg)
         except Exception as exc:
