@@ -131,6 +131,26 @@ class TestParams(unittest.TestCase):
         self.assertIn("shape", tip)
         self.assertIn("textures", tip)
 
+    def test_dmc_retries_reset_shape_offload(self):
+        _install_services_stub()
+        import inspect
+        from unittest import mock
+        from generator import Hunyuan3DShapeV21Generator as G
+        src = inspect.getsource(G.generate)
+        self.assertEqual(src.count("self._reset_shape_offload()"), 3)
+
+        calls = []
+        fake_model = types.SimpleNamespace(
+            maybe_free_model_hooks=lambda: calls.append("reset"), device=None)
+        gen = object.__new__(G)
+        gen._model = fake_model
+        gen._shape_cpu_offload = True
+        fake_torch = types.SimpleNamespace(device=lambda value: f"device:{value}")
+        with mock.patch.dict(sys.modules, {"torch": fake_torch}):
+            gen._reset_shape_offload()
+        self.assertEqual(calls, ["reset"])
+        self.assertEqual(fake_model.device, "device:cuda:0")
+
 
 class TestBackgroundRemoval(unittest.TestCase):
     def _mod(self):

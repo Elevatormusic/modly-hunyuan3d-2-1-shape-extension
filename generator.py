@@ -208,6 +208,14 @@ class Hunyuan3DShapeV21Generator(BaseGenerator):
         self._shape_cpu_offload = False
         print(f"[{self.MODEL_ID}] shape shared-memory offload disabled")
 
+    def _reset_shape_offload(self) -> None:
+        """Return all shape modules to CPU and reinstall the offload chain."""
+        if not bool(getattr(self, "_shape_cpu_offload", False)):
+            return
+        import torch
+        self._model.maybe_free_model_hooks()
+        self._model.device = torch.device("cuda:0")
+
     def unload(self) -> None:
         super().unload()
         try:
@@ -328,12 +336,14 @@ class Hunyuan3DShapeV21Generator(BaseGenerator):
                     # DMC raised — retry once with stock mc (re-seeded in _extract).
                     print(f"[{self.MODEL_ID}] DMC extraction failed ({exc}); "
                           "retrying with mc")
+                    self._reset_shape_offload()
                     mesh = _extract("mc")
                 else:
                     # DMC can also fail *silently* (swallowed None). Same fall-back.
                     if mesh is None and _algo == "dmc":
                         print(f"[{self.MODEL_ID}] DMC extraction returned no mesh; "
                               "retrying with mc")
+                        self._reset_shape_offload()
                         mesh = _extract("mc")
 
                 if mesh is None:
@@ -344,10 +354,7 @@ class Hunyuan3DShapeV21Generator(BaseGenerator):
             # The VAE is last in the hook chain, so explicitly return it to CPU.
             if use_shared_vram and self._model is not None:
                 try:
-                    self._model.maybe_free_model_hooks()
-                    # maybe_free_model_hooks reinstalls hooks via the upstream
-                    # helper, which resets self.device to CPU.
-                    self._model.device = torch.device("cuda:0")
+                    self._reset_shape_offload()
                 except Exception as _exc:
                     print(f"[{self.MODEL_ID}] shape offload cleanup skipped ({_exc})")
             stop_evt.set()
