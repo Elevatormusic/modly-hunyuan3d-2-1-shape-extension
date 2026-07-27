@@ -112,6 +112,25 @@ class TestParams(unittest.TestCase):
         self.assertIn("use_shared_vram", params)
         self.assertEqual(params["use_shared_vram"].default, False)
 
+    def test_shared_vram_controls_shape_offload(self):
+        _install_services_stub()
+        import inspect
+        from generator import Hunyuan3DShapeV21Generator as G
+        src = inspect.getsource(G._configure_shape_memory)
+        self.assertIn("enable_model_cpu_offload", src)
+        self.assertIn("self._model.components", src)
+        self.assertIn('"conditioner"', src)
+        self.assertIn('"model"', src)
+        self.assertIn('"vae"', src)
+        self.assertIn('self._model.to("cuda"', src)
+        self.assertGreaterEqual(src.count('self._model.device = torch.device("cuda:0")'), 2)
+
+    def test_shared_vram_tooltip_mentions_both_stages(self):
+        tip = self._schema()["use_shared_vram"]["tooltip"].lower()
+        self.assertIn("both stages", tip)
+        self.assertIn("shape", tip)
+        self.assertIn("textures", tip)
+
 
 class TestBackgroundRemoval(unittest.TestCase):
     def _mod(self):

@@ -131,8 +131,11 @@ class Hunyuan3DShapeV21Generator(BaseGenerator):
             device = "mps" if torch.backends.mps.is_available() else "cpu"
             dtype  = torch.float32
         else:
-            device = "cuda" if torch.cuda.is_available() else "cpu"
-            dtype  = torch.float16 if device == "cuda" else torch.float32
+            # Stage CUDA pipelines in CPU RAM first. generate() either moves the
+            # complete pipeline to CUDA or installs upstream's CPU-offload hooks.
+            # Loading directly on CUDA can OOM before generation parameters are read.
+            device = "cpu"
+            dtype  = torch.float16 if torch.cuda.is_available() else torch.float32
 
         subfolder   = self.download_check if self.download_check else _SUBFOLDER
         model_dir   = self.model_dir / subfolder
@@ -149,7 +152,61 @@ class Hunyuan3DShapeV21Generator(BaseGenerator):
             dtype=dtype,
             use_safetensors=False,
         )
+        self._shape_cpu_offload = False
         print(f"[{self.MODEL_ID}] Loaded on {device}.")
+
+    def _configure_shape_memory(self, use_shared_vram: bool) -> None:
+        """Apply the shared-memory toggle to the shape pipeline."""
+        import torch
+        if self._model is None or not torch.cuda.is_available():
+            return
+
+        enabled = bool(use_shared_vram)
+        active = bool(getattr(self, "_shape_cpu_offload", False))
+        if enabled == active:
+            if enabled:
+                # Upstream __call__ uses self.device for scheduler tensors rather
+                # than _execution_device. Keep that logical device on CUDA while
+                # Accelerate hooks continue to manage module residency.
+                self._model.device = torch.device("cuda:0")
+            else:
+                # A newly loaded CUDA pipeline starts staged on CPU.
+                self._model.to("cuda", torch.float16)
+            return
+
+        if enabled:
+            # Tencent copied this helper from Diffusers, but its standalone shape
+            # pipeline does not expose DiffusionPipeline.components. Supply the
+            # registry the upstream offload code and _execution_device expect.
+            if not hasattr(self._model, "components"):
+                self._model.components = {
+                    "conditioner": self._model.conditioner,
+                    "model": self._model.model,
+                    "vae": self._model.vae,
+                }
+            # Upstream's sequence is conditioner -> diffusion model -> VAE.
+            self._model.enable_model_cpu_offload(device="cuda")
+            # The upstream method leaves self.device as CPU even though hooked
+            # modules execute on CUDA. Its scheduler/latent code reads self.device
+            # directly, so pin the logical execution device after hooks install.
+            self._model.device = torch.device("cuda:0")
+            self._shape_cpu_offload = True
+            print(f"[{self.MODEL_ID}] shape shared-memory offload enabled "
+                  "(conditioner -> diffusion model -> VAE)")
+            return
+
+        # The user switched the toggle off between runs. Remove Accelerate's
+        # hooks before restoring historical all-CUDA residency.
+        for hook in list(getattr(self._model, "_all_hooks", [])):
+            try:
+                hook.offload()
+                hook.remove()
+            except Exception:
+                pass
+        self._model._all_hooks = []
+        self._model.to("cuda", torch.float16)
+        self._shape_cpu_offload = False
+        print(f"[{self.MODEL_ID}] shape shared-memory offload disabled")
 
     def unload(self) -> None:
         super().unload()
@@ -201,6 +258,10 @@ class Hunyuan3DShapeV21Generator(BaseGenerator):
         seed           = int(params.get("seed", -1))
         if seed == -1:
             seed = random.randint(0, 2**32 - 1)
+
+        # One control governs both stages: shape component offload here and the
+        # existing shared-system-RAM paint budget in _run_texture().
+        self._configure_shape_memory(use_shared_vram)
 
         # VRAM-aware preflight: cap Mesh Resolution so the shape stage fits, and warn
         # if textures are likely to exceed free VRAM (prevents silent OOM / the
@@ -280,6 +341,15 @@ class Hunyuan3DShapeV21Generator(BaseGenerator):
                     # fail with a clear error instead of a downstream NoneType crash.
                     raise RuntimeError("shape extraction returned no mesh")
         finally:
+            # The VAE is last in the hook chain, so explicitly return it to CPU.
+            if use_shared_vram and self._model is not None:
+                try:
+                    self._model.maybe_free_model_hooks()
+                    # maybe_free_model_hooks reinstalls hooks via the upstream
+                    # helper, which resets self.device to CPU.
+                    self._model.device = torch.device("cuda:0")
+                except Exception as _exc:
+                    print(f"[{self.MODEL_ID}] shape offload cleanup skipped ({_exc})")
             stop_evt.set()
 
         self._check_cancelled(cancel_event)
@@ -1892,7 +1962,7 @@ class Hunyuan3DShapeV21Generator(BaseGenerator):
                     {"value": 0, "label": "Off"},
                     {"value": 1, "label": "On (borrow system RAM — much slower)"},
                 ],
-                "tooltip": "Lets a texture run exceed your VRAM by paging to system RAM over PCIe — needed only for very high settings (e.g. 768 view resolution) on smaller cards. Much slower (tens of minutes) and needs a large Windows page file. Leave Off; Auto already fits normal runs to your card.",
+                "tooltip": "Uses system RAM to reduce dedicated-VRAM pressure in both stages: shape moves the conditioner, diffusion model, and VAE between CPU and GPU; textures may page beyond VRAM. Much slower, but recommended for 8–10 GB cards. Needs ample RAM and a large Windows page file.",
             },
             {
                 "id": "mesh_mode",
