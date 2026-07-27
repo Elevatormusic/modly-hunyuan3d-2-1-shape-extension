@@ -141,7 +141,7 @@
             { "value": 0, "label": "Off" },
             { "value": 1, "label": "On (borrow system RAM — much slower)" }
           ],
-          "tooltip": "Lets a texture run exceed your VRAM by paging to system RAM over PCIe — needed only for very high settings (e.g. 768 view resolution) on smaller cards. Much slower (tens of minutes) and needs a large Windows page file. Leave Off; Auto already fits normal runs to your card."
+          "tooltip": "Uses system RAM to reduce dedicated-VRAM pressure in both stages: shape moves the conditioner, diffusion model, and VAE between CPU and GPU; textures may page beyond VRAM. Much slower, but recommended for 8–10 GB cards. Needs ample RAM and a large Windows page file."
         },
         {
           "id": "mesh_mode",

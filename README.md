@@ -177,7 +177,11 @@ The paint pass produces a standard glTF PBR set — **albedo** (base color) and 
 
 Measured on an RTX 3090 (512/6 views): 20.4 GB reserved full-GPU vs 13.0 GB reduced, view-space difference 2.24/255 (run-to-run noise).
 
-**Use shared GPU memory** lets a run exceed your VRAM by paging to system RAM over PCIe — needed only for very high settings (e.g. 768 view resolution, which adds ~14 GB) on smaller cards. It's much slower and wants a large Windows page file.
+**Use shared GPU memory** applies to both stages. For shape it keeps inactive
+components in system RAM and moves the conditioner, diffusion model, and VAE to
+the GPU in sequence. For textures it also lets the run page beyond dedicated
+VRAM. This is much slower, but is the recommended path for 8–10 GB cards and
+wants ample system RAM plus a large Windows page file.
 
 </details>
 
@@ -217,7 +221,7 @@ And because **Auto** measures free VRAM at generation time and picks the full-GP
 - **Texture view resolution** — 512 / 768 per-view render size
 - **Texture views** — camera views painted / baked (6–9)
 - **Texture memory** — VRAM path at identical quality: Auto (default) / Standard (~20 GB, full GPU) / Reduced VRAM (~13 GB, ~5% slower)
-- **Use shared GPU memory** — let a run page into system RAM when it exceeds VRAM (only needed for very high settings)
+- **Use shared GPU memory** — offload inactive shape components and allow texture paging through system RAM; slower, recommended for 8–10 GB cards
 - **Mesh cleanup** — Regular (default) / Isotropic / BPT neural
 - **Bake normal map** — bake dense-mesh detail as a normal map with shipped glTF tangents (off by default)
 - **Fix texture seams** — reconcile UV-seam color jumps (on by default)

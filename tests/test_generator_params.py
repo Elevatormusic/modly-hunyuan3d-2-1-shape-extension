@@ -112,6 +112,45 @@ class TestParams(unittest.TestCase):
         self.assertIn("use_shared_vram", params)
         self.assertEqual(params["use_shared_vram"].default, False)
 
+    def test_shared_vram_controls_shape_offload(self):
+        _install_services_stub()
+        import inspect
+        from generator import Hunyuan3DShapeV21Generator as G
+        src = inspect.getsource(G._configure_shape_memory)
+        self.assertIn("enable_model_cpu_offload", src)
+        self.assertIn("self._model.components", src)
+        self.assertIn('"conditioner"', src)
+        self.assertIn('"model"', src)
+        self.assertIn('"vae"', src)
+        self.assertIn('self._model.to("cuda"', src)
+        self.assertGreaterEqual(src.count('self._model.device = torch.device("cuda:0")'), 2)
+
+    def test_shared_vram_tooltip_mentions_both_stages(self):
+        tip = self._schema()["use_shared_vram"]["tooltip"].lower()
+        self.assertIn("both stages", tip)
+        self.assertIn("shape", tip)
+        self.assertIn("textures", tip)
+
+    def test_dmc_retries_reset_shape_offload(self):
+        _install_services_stub()
+        import inspect
+        from unittest import mock
+        from generator import Hunyuan3DShapeV21Generator as G
+        src = inspect.getsource(G.generate)
+        self.assertEqual(src.count("self._reset_shape_offload()"), 3)
+
+        calls = []
+        fake_model = types.SimpleNamespace(
+            maybe_free_model_hooks=lambda: calls.append("reset"), device=None)
+        gen = object.__new__(G)
+        gen._model = fake_model
+        gen._shape_cpu_offload = True
+        fake_torch = types.SimpleNamespace(device=lambda value: f"device:{value}")
+        with mock.patch.dict(sys.modules, {"torch": fake_torch}):
+            gen._reset_shape_offload()
+        self.assertEqual(calls, ["reset"])
+        self.assertEqual(fake_model.device, "device:cuda:0")
+
 
 class TestBackgroundRemoval(unittest.TestCase):
     def _mod(self):
