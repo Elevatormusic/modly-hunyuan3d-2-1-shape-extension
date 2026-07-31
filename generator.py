@@ -34,6 +34,7 @@ from services.generators.base import BaseGenerator, smooth_progress, GenerationC
 
 _HF_REPO_ID = "tencent/Hunyuan3D-2.1"
 _SUBFOLDER  = "hunyuan3d-dit-v2-1"
+_CKPT_NAME  = "model.fp16.ckpt"
 _GITHUB_ZIP = "https://github.com/Tencent-Hunyuan/Hunyuan3D-2.1/archive/refs/heads/main.zip"
 
 # --- Texture (paint) pipeline ------------------------------------------------ #
@@ -101,15 +102,21 @@ class Hunyuan3DShapeV21Generator(BaseGenerator):
     # ------------------------------------------------------------------ #
 
     def is_downloaded(self) -> bool:
+        import ckpt_guard
         subfolder = self.download_check if self.download_check else _SUBFOLDER
         model_dir = self.model_dir / subfolder
+        # The checkpoint is size- and footer-checked, not merely existence-checked:
+        # a half-written 7.4 GB download would otherwise pass this gate forever,
+        # skip the re-download, and fail inside torch.load on every launch.
         return (
             model_dir.exists()
             and (model_dir / "config.yaml").exists()
-            and (model_dir / "model.fp16.ckpt").exists()
+            and ckpt_guard.ckpt_ok(model_dir / _CKPT_NAME)
         )
 
     def load(self) -> None:
+        import ckpt_guard
+
         if self._model is not None:
             return
 
@@ -123,6 +130,40 @@ class Hunyuan3DShapeV21Generator(BaseGenerator):
         # selection re-checks `import diso` and falls back to 'mc' if unavailable.
         self._ensure_diso()
 
+        subfolder = self.download_check if self.download_check else _SUBFOLDER
+        model_dir = self.model_dir / subfolder
+
+        try:
+            self._model = self._load_pipeline(model_dir)
+        except Exception as exc:
+            if not ckpt_guard.looks_corrupt(exc):
+                raise
+            # The checkpoint cleared the size gate but its container is
+            # unreadable — a damaged file rather than a bug. Repair it once:
+            # drop the file plus the hub sidecars that would let the re-fetch
+            # skip it, download again, and retry.
+            print(f"[{self.MODEL_ID}] Checkpoint unreadable ({exc}). "
+                  f"Replacing it and retrying once.")
+            for path in ckpt_guard.purge(self.model_dir, f"{subfolder}/{_CKPT_NAME}"):
+                print(f"[{self.MODEL_ID}] removed {path}")
+            self._download_weights()
+            try:
+                self._model = self._load_pipeline(model_dir)
+            except Exception as retry_exc:
+                raise RuntimeError(
+                    f"{_CKPT_NAME} is still unreadable after downloading it again. "
+                    f"Delete the folder below and retry on a drive with ~15 GB free.\n"
+                    f"Path: {model_dir / _CKPT_NAME}"
+                ) from retry_exc
+
+        self._shape_cpu_offload = False
+
+    def _load_pipeline(self, model_dir: Path):
+        """Build the DiT pipeline from explicit local files.
+
+        Split out of load() so the checkpoint-repair path can retry it without
+        duplicating device selection.
+        """
         import torch
         from hy3dshape.pipelines import Hunyuan3DDiTFlowMatchingPipeline
 
@@ -137,23 +178,18 @@ class Hunyuan3DShapeV21Generator(BaseGenerator):
             device = "cpu"
             dtype  = torch.float16 if torch.cuda.is_available() else torch.float32
 
-        subfolder   = self.download_check if self.download_check else _SUBFOLDER
-        model_dir   = self.model_dir / subfolder
-        config_path = str(model_dir / "config.yaml")
-        ckpt_path   = str(model_dir / "model.fp16.ckpt")
-
         print(f"[{self.MODEL_ID}] Loading 2.1 shape pipeline from {model_dir} on {device}…")
         # Load directly from explicit local files. This bypasses hy3dshape's
         # smart_load_model() HF/cache resolution so the model loads fully offline.
-        self._model = Hunyuan3DDiTFlowMatchingPipeline.from_single_file(
-            ckpt_path,
-            config_path,
+        pipeline = Hunyuan3DDiTFlowMatchingPipeline.from_single_file(
+            str(model_dir / _CKPT_NAME),
+            str(model_dir / "config.yaml"),
             device=device,
             dtype=dtype,
             use_safetensors=False,
         )
-        self._shape_cpu_offload = False
         print(f"[{self.MODEL_ID}] Loaded on {device}.")
+        return pipeline
 
     def _configure_shape_memory(self, use_shared_vram: bool) -> None:
         """Apply the shared-memory toggle to the shape pipeline."""
@@ -490,6 +526,7 @@ class Hunyuan3DShapeV21Generator(BaseGenerator):
             return mesh
 
     def _download_weights(self) -> None:
+        import ckpt_guard
         from huggingface_hub import snapshot_download
         subfolder = self.download_check if self.download_check else _SUBFOLDER
         print(f"[{self.MODEL_ID}] Downloading {_HF_REPO_ID} ({subfolder}, ~7.4 GB)…")
@@ -498,6 +535,17 @@ class Hunyuan3DShapeV21Generator(BaseGenerator):
             local_dir=str(self.model_dir),
             allow_patterns=[f"{subfolder}/*"],
         )
+        # Verify before declaring success. An interrupted or space-starved
+        # download otherwise surfaces much later as an opaque zip-reader error
+        # from torch.load, with nothing pointing back at this step.
+        ckpt = self.model_dir / subfolder / _CKPT_NAME
+        if not ckpt_guard.ckpt_ok(ckpt):
+            raise RuntimeError(
+                f"{_CKPT_NAME} is incomplete after downloading "
+                f"({ckpt_guard.size_note(ckpt)}). The download was interrupted or "
+                f"the drive is full — free up ~15 GB and try again.\n"
+                f"Path: {ckpt}"
+            )
         print(f"[{self.MODEL_ID}] Download complete.")
 
     def _ensure_hy3dshape(self) -> None:

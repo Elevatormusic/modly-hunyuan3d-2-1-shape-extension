@@ -249,6 +249,27 @@ And because **Auto** measures free VRAM at generation time and picks the full-GP
 
 ---
 
+## &#128295; Troubleshooting
+
+<details>
+<summary><b>"PytorchStreamReader failed reading zip archive: failed finding central directory"</b></summary>
+
+<br>
+
+The shape checkpoint on disk is incomplete. `model.fp16.ckpt` is a 7.4 GB archive whose index sits at the very end of the file, so a download cut short — a closed app, a dropped connection, a full drive, an antivirus quarantine, a `git clone` without git-lfs — leaves a file that torch cannot open at all.
+
+The extension detects and repairs this itself: the checkpoint is size- and footer-checked before every load, and a file that is damaged in a way only `torch.load` can see is deleted and re-downloaded once automatically. So the usual fix is simply to run the generation again.
+
+If it keeps failing, the drive is the likely culprit — the download needs about **15 GB free** for the shape checkpoint plus the paint weights. Free up space and delete the file so it re-downloads clean:
+
+```powershell
+Remove-Item "$env:USERPROFILE\Documents\Modly\models\hunyuan3d-2-1-shape\generate\hunyuan3d-dit-v2-1\model.fp16.ckpt" -Force
+```
+
+</details>
+
+---
+
 ## &#128220; Upstream &amp; license
 
 - **Weights:** `tencent/Hunyuan3D-2.1` (subfolder `hunyuan3d-dit-v2-1`)
