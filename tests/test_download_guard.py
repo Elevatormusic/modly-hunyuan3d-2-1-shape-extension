@@ -213,6 +213,21 @@ class TestLoadSelfRepair(_GenCase):
         self.assertEqual(self.downloads, [])        # no re-download
         self.assertTrue(self.ckpt.exists())         # nothing deleted
 
+    def test_unrelated_error_on_the_retry_is_preserved(self):
+        # The replacement checkpoint may fail to load for a reason that has
+        # nothing to do with the file — the user must see that error, not a
+        # "delete it and download 7.4 GB again" message.
+        def side_effect(n):
+            raise RuntimeError(_CORRUPT if n == 1 else "CUDA out of memory")
+
+        g = self._wire(self._gen(), side_effect)
+        with self.assertRaises(RuntimeError) as ctx:
+            g.load()
+        self.assertIn("out of memory", str(ctx.exception))
+        self.assertNotIn("still unreadable", str(ctx.exception))
+        self.assertEqual(len(self.calls), 2)     # the repair itself still ran
+        self.assertEqual(len(self.downloads), 1)
+
     def test_second_failure_reports_actionably(self):
         g = self._wire(self._gen(), lambda n: _raise(_CORRUPT))
         with self.assertRaises(RuntimeError) as ctx:

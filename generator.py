@@ -153,6 +153,12 @@ class Hunyuan3DShapeV21Generator(BaseGenerator):
             try:
                 self._model = self._load_pipeline(model_dir)
             except Exception as retry_exc:
+                # Same gate as the first attempt: only a container-read failure
+                # means the replacement is also bad. An OOM or a missing
+                # dependency here is its own problem, and rewriting it would
+                # send the user off deleting another 7.4 GB for nothing.
+                if not ckpt_guard.looks_corrupt(retry_exc):
+                    raise
                 raise RuntimeError(
                     f"{_CKPT_NAME} is still unreadable after downloading it again. "
                     f"Delete the folder below and retry on a drive with ~15 GB free.\n"
