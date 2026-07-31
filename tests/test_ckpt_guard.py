@@ -82,6 +82,13 @@ class TestLooksCorrupt(unittest.TestCase):
     def test_matches_bad_zip_file(self):
         self.assertTrue(ckpt_guard.looks_corrupt(zipfile.BadZipFile("File is not a zip file")))
 
+    def test_matches_torch_container_enforce_failure(self):
+        # Captured on-device from torch 2.7 when the checkpoint was replaced by
+        # an unrelated ZIP. Names neither the stream reader nor the directory.
+        exc = RuntimeError("[enforce fail at inline_container.cc:176] . file in "
+                           "archive is not in a subdirectory: notes.txt")
+        self.assertTrue(ckpt_guard.looks_corrupt(exc))
+
     def test_matches_unpickling_stub(self):
         self.assertTrue(ckpt_guard.looks_corrupt(RuntimeError("invalid load key, '<'.")))
 
