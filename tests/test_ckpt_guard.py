@@ -89,6 +89,19 @@ class TestLooksCorrupt(unittest.TestCase):
                            "archive is not in a subdirectory: notes.txt")
         self.assertTrue(ckpt_guard.looks_corrupt(exc))
 
+    def test_ignores_torch_version_skew(self):
+        # Same translation unit as the corruption above, but the file is HEALTHY
+        # and the message is actionable. Classifying it as damage would delete
+        # 7.4 GB, re-download the identical file, and bury the real cause.
+        # Captured on-device from torch 2.7.
+        exc = RuntimeError(
+            "[enforce fail at inline_container.cc:233] . Attempted to read a "
+            "PyTorch file with version 999, but the maximum supported version "
+            "for reading is 10. The version of your PyTorch installation may be "
+            "too old, please upgrade PyTorch to latest version to mitigate "
+            "these issues.")
+        self.assertFalse(ckpt_guard.looks_corrupt(exc))
+
     def test_matches_unpickling_stub(self):
         self.assertTrue(ckpt_guard.looks_corrupt(RuntimeError("invalid load key, '<'.")))
 

@@ -40,12 +40,15 @@ _EOCD_TAIL = 22 + 0xFFFF
 _CORRUPT_MARKERS = (
     "central directory",
     "pytorchstreamreader",
-    # torch's ZIP container reader. Everything it raises — malformed layout,
-    # bad offsets, CRC mismatch — means the archive cannot be read, so the
-    # file itself is the problem. Found on-device: a checkpoint replaced by
-    # an unrelated ZIP raises only "[enforce fail at inline_container.cc:176]
-    # . file in archive is not in a subdirectory", matching none of the rest.
-    "inline_container",
+    # A checkpoint replaced by an unrelated ZIP raises only "[enforce fail at
+    # inline_container.cc:176] . file in archive is not in a subdirectory",
+    # which matches none of the other markers. Matched on that specific
+    # wording rather than on inline_container.cc, because the same file also
+    # hosts the format-version check: "Attempted to read a PyTorch file with
+    # version N, but the maximum supported version for reading is M" is an
+    # actionable upgrade-PyTorch message about a perfectly HEALTHY file, and
+    # treating it as damage would delete 7.4 GB and hide the real cause.
+    "not in a subdirectory",
     "not a zip file",
     "invalid load key",
     "unexpected eof",
