@@ -116,6 +116,52 @@ class TestDownloadWeights(_GenCase):
         self.assertIn("model.fp16.ckpt", msg)
         self.assertIn(str(self.ckpt), msg)      # names the path to look at
 
+    def _sidecar(self):
+        side = self.root / ".cache" / "huggingface" / "download" / "hunyuan3d-dit-v2-1"
+        side.mkdir(parents=True)
+        meta = side / "model.fp16.ckpt.metadata"
+        meta.write_text("etag")
+        return meta
+
+    def test_purges_rejected_checkpoint_before_downloading(self):
+        # snapshot_download skips any file whose sidecar etag still matches, so
+        # a checkpoint truncated after a successful download would otherwise
+        # survive the re-fetch and fail identically on every launch.
+        self.ckpt.write_bytes(b"partial")
+        meta = self._sidecar()
+        seen = {}
+
+        def on_download():
+            seen["ckpt"] = self.ckpt.exists()
+            seen["meta"] = meta.exists()
+            self._write_valid_ckpt()
+
+        g = self._gen()
+        with mock.patch.dict(sys.modules, {"huggingface_hub": self._fake_hub(on_download)}), \
+             mock.patch.object(ckpt_guard, "MIN_CKPT_BYTES", 1):
+            g._download_weights()
+
+        self.assertFalse(seen["ckpt"], "damaged checkpoint must be gone before the re-fetch")
+        self.assertFalse(seen["meta"], "stale etag would make the re-fetch a no-op")
+
+    def test_healthy_checkpoint_is_not_purged(self):
+        # The inverse guard: never discard a good 7.4 GB download.
+        self._write_valid_ckpt()
+        meta = self._sidecar()
+        seen = {}
+
+        def on_download():
+            seen["ckpt"] = self.ckpt.exists()
+            seen["meta"] = meta.exists()
+
+        g = self._gen()
+        with mock.patch.dict(sys.modules, {"huggingface_hub": self._fake_hub(on_download)}), \
+             mock.patch.object(ckpt_guard, "MIN_CKPT_BYTES", 1):
+            g._download_weights()
+
+        self.assertTrue(seen["ckpt"])
+        self.assertTrue(seen["meta"])
+
     def test_accepts_complete_download(self):
         g = self._gen()
         hub = self._fake_hub(on_download=self._write_valid_ckpt)

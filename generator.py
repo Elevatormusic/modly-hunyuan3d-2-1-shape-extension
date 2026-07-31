@@ -142,6 +142,9 @@ class Hunyuan3DShapeV21Generator(BaseGenerator):
             # unreadable — a damaged file rather than a bug. Repair it once:
             # drop the file plus the hub sidecars that would let the re-fetch
             # skip it, download again, and retry.
+            # This purge is not redundant with the one in _download_weights():
+            # that one fires on files ckpt_ok rejects, this one on files it
+            # accepts but torch cannot open. Both are needed.
             print(f"[{self.MODEL_ID}] Checkpoint unreadable ({exc}). "
                   f"Replacing it and retrying once.")
             for path in ckpt_guard.purge(self.model_dir, f"{subfolder}/{_CKPT_NAME}"):
@@ -529,6 +532,19 @@ class Hunyuan3DShapeV21Generator(BaseGenerator):
         import ckpt_guard
         from huggingface_hub import snapshot_download
         subfolder = self.download_check if self.download_check else _SUBFOLDER
+        ckpt = self.model_dir / subfolder / _CKPT_NAME
+
+        # A checkpoint that already failed validation has to be deleted before
+        # re-fetching. snapshot_download trusts its own sidecar metadata: with a
+        # matching etag it skips the file entirely, so a checkpoint truncated
+        # after a successful download would survive the "re-download", fail the
+        # check below, and raise on every launch — never reaching load()'s
+        # repair path, which only runs once pipeline loading has begun.
+        # Guarded on ckpt_ok so a healthy 7.4 GB file is never discarded.
+        if ckpt.exists() and not ckpt_guard.ckpt_ok(ckpt):
+            for path in ckpt_guard.purge(self.model_dir, f"{subfolder}/{_CKPT_NAME}"):
+                print(f"[{self.MODEL_ID}] removed damaged {path}")
+
         print(f"[{self.MODEL_ID}] Downloading {_HF_REPO_ID} ({subfolder}, ~7.4 GB)…")
         snapshot_download(
             repo_id=_HF_REPO_ID,
@@ -538,7 +554,6 @@ class Hunyuan3DShapeV21Generator(BaseGenerator):
         # Verify before declaring success. An interrupted or space-starved
         # download otherwise surfaces much later as an opaque zip-reader error
         # from torch.load, with nothing pointing back at this step.
-        ckpt = self.model_dir / subfolder / _CKPT_NAME
         if not ckpt_guard.ckpt_ok(ckpt):
             raise RuntimeError(
                 f"{_CKPT_NAME} is incomplete after downloading "
