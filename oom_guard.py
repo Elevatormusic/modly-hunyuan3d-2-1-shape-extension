@@ -62,18 +62,28 @@ def advice(*, tex_resolution=512, max_num_view=6, shared_on=False,
     except (TypeError, ValueError):
         nv = 6
 
-    if tr >= 768:
-        steps.append(f"Lower View resolution from {tr} to 512 — this frees about "
-                     f"{_VIEW_RES_SAVING_GB} GB on its own, far more than any other setting.")
-    if nv > 6:
-        steps.append(f"Reduce Views from {nv} to 6 (about "
-                     f"{_PER_VIEW_SAVING_GB:.2f} GB per view above 6).")
-    if str(tier) == "standard":
-        steps.append("Set Texture memory to Reduced — same quality, about 7 GB less VRAM.")
+    # Ordered so everything that preserves output quality comes first. Spilling
+    # into system memory is the extension's whole premise on small cards, so the
+    # levers that make the spill work lead; reducing quality is the last resort.
     if not shared_on:
         steps.append("Turn on Use shared GPU memory to borrow system RAM.")
-    steps.append("Close other GPU apps — browsers and other AI tools hold VRAM.")
-    steps.append("Or switch textures off to still get the untextured mesh.")
+    steps.append("Check NVIDIA Control Panel > Manage 3D Settings > "
+                 "CUDA - Sysmem Fallback Policy. If it is set to 'Prefer No Sysmem "
+                 "Fallback', the driver refuses to spill into system RAM and this "
+                 "error is the result — set it back to Driver Default.")
+    steps.append("Make sure the Windows page file is large and on a fast drive — "
+                 "the spill lands there once system RAM fills.")
+    steps.append("Close other GPU apps — browsers and other AI tools hold VRAM that "
+                 "cannot be spilled.")
+    if str(tier) == "standard":
+        steps.append("Set Texture memory to Reduced — same quality, about 7 GB less VRAM.")
+    if nv > 6:
+        steps.append(f"Reduce Views from {nv} to 6 (about "
+                     f"{_PER_VIEW_SAVING_GB:.2f} GB per view above 6). This lowers "
+                     f"quality, so try it only after the steps above.")
+    if tr >= 768:
+        steps.append(f"Last resort, and it does cost quality: lower View resolution "
+                     f"from {tr} to 512, which frees about {_VIEW_RES_SAVING_GB} GB.")
 
     lines.append("Try, in order:")
     lines.extend(f"  {i}. {s}" for i, s in enumerate(steps, 1))

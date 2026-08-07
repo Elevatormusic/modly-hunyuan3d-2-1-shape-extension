@@ -38,11 +38,21 @@ class TestContextLost(unittest.TestCase):
 
 
 class TestAdvice(unittest.TestCase):
-    def test_view_resolution_leads_when_raised(self):
-        msg = oom_guard.advice(tex_resolution=768, max_num_view=8)
-        first = [ln for ln in msg.splitlines() if ln.strip().startswith("1.")][0]
-        self.assertIn("View resolution", first)   # the ~14 GB lever comes first
-        self.assertIn("768", first)
+    def test_quality_preserving_steps_come_before_quality_cuts(self):
+        # The extension exists so small cards can render by spilling to system
+        # RAM. Advice that leads with "lower your settings" defeats that, so the
+        # spill levers must rank above anything that changes the output.
+        msg = oom_guard.advice(tex_resolution=768, max_num_view=8, shared_on=False)
+        order = msg.index
+        self.assertLess(order("Use shared GPU memory"), order("Reduce Views"))
+        self.assertLess(order("Sysmem Fallback Policy"), order("Reduce Views"))
+        self.assertLess(order("page file"), order("View resolution"))
+        self.assertLess(order("Reduce Views"), order("View resolution"))
+
+    def test_names_the_driver_setting_that_blocks_spilling(self):
+        msg = oom_guard.advice()
+        self.assertIn("Sysmem Fallback Policy", msg)
+        self.assertIn("Prefer No Sysmem Fallback", msg)
 
     def test_views_step_present_and_counted(self):
         msg = oom_guard.advice(tex_resolution=512, max_num_view=9)
