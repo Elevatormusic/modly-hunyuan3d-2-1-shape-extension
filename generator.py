@@ -828,6 +828,17 @@ class Hunyuan3DShapeV21Generator(BaseGenerator):
                         print(f"[{self.MODEL_ID}] game-ready GLB -> {out_path}")
                 except Exception as exc:
                     print(f"[{self.MODEL_ID}] game-ready step skipped ({exc})")
+        except Exception as exc:
+            # A paint-stage OOM otherwise surfaces as a raw CUDA traceback from
+            # inside the VAE decode, naming no setting the user can act on.
+            import oom_guard
+            if not oom_guard.is_cuda_oom(exc):
+                raise
+            raise RuntimeError(oom_guard.advice(
+                tex_resolution=tex_resolution, max_num_view=max_num_view,
+                shared_on=use_shared_vram, tier=_plan.tier,
+                lost_context=oom_guard.context_lost(exc),
+                planner_warning=_plan.warning)) from exc
         finally:
             try:
                 import eb_accel
@@ -835,8 +846,15 @@ class Hunyuan3DShapeV21Generator(BaseGenerator):
             except Exception:
                 pass
             del paint_pipeline
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
+            # Guarded: a driver-level OOM poisons the CUDA context, so this call
+            # raises too. Unguarded in a finally it would replace the real error
+            # with a cleanup traceback AND skip the scratch-dir removal below,
+            # reinstating the %TEMP% leak that removal exists to prevent.
+            try:
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+            except Exception as _exc:
+                print(f"[{self.MODEL_ID}] empty_cache skipped ({_exc})")
             # Remove the paint scratch dir (shape.glb + cond.png + textured.obj/.mtl
             # + texture maps, ~15-25 MB/gen). It leaked to %TEMP% every run. Runs
             # after finishing.finish() (which reads textured.* for the QA sheet), and
