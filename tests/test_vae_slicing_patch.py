@@ -82,6 +82,36 @@ class TestVaeSlicingPatch(unittest.TestCase):
         self.assertIn("self.pipeline.vae.enable_slicing()", out)
         self.assertIn("paint VAE: slicing ENABLED", out)
 
+    def test_slicing_is_env_gated(self):
+        # Measured: slicing never changes the allocated peak. It cuts the
+        # allocator's reserved footprint, which pays off only when the run is
+        # pressing against the budget -- at 512 on a roomy card it is a 7.5%
+        # tax for 0.68 GB. So it must not be unconditional.
+        out = self._patch()
+        idx = out.index("self.pipeline.vae.enable_slicing()")
+        self.assertIn('os.environ.get("EB_VAE_SLICING", "") == "on"', out[:idx])
+
+    def test_migrates_the_ungated_v1_block(self):
+        # A source already carrying the always-on first version must pick up
+        # the gate rather than keep slicing unconditionally.
+        v1 = (
+            '        # EB VAE slicing: decode the view batch one view at a time. Same\n'
+            '        # output (a VAE decoder has no cross-batch interaction), far lower\n'
+            '        # peak — this decode is where tight-VRAM cards run out.\n'
+            '        try:\n'
+            '            self.pipeline.vae.enable_slicing()\n'
+            '            print("[eb_accel] paint VAE: slicing ENABLED")\n'
+            '        except Exception as exc:\n'
+            '            print(f"[eb_accel] VAE slicing unavailable ({exc!r})")\n')
+        pre = _PRISTINE.replace(
+            '        if hasattr(self.pipeline.unet, "use_dino") and self.pipeline.unet.use_dino:',
+            v1 + '        if hasattr(self.pipeline.unet, "use_dino") and self.pipeline.unet.use_dino:',
+            1)
+        out = self._patch(text=pre)
+        self.assertIn("EB_VAE_SLICING", out)
+        self.assertEqual(out.count("enable_slicing()"), 1)
+        ast.parse(out)
+
     def test_patch_output_is_valid_python(self):
         ast.parse(self._patch())
 
@@ -105,11 +135,17 @@ class TestVaeSlicingPatch(unittest.TestCase):
         self.assertLess(out.index("enable_slicing()"), out.index("def forward_one"))
 
     def test_no_op_when_already_present(self):
+        # Keyed on EB_VAE_SLICING, the gate itself -- not on the print string,
+        # which the ungated v1 block also contained and which must therefore
+        # still be migrated rather than treated as already-done.
         pre = _PRISTINE.replace(
             '        if hasattr(self.pipeline.unet, "use_dino")',
-            '        # [eb_accel] paint VAE: slicing ENABLED\n'
+            '        if os.environ.get("EB_VAE_SLICING", "") == "on":\n'
+            '            self.pipeline.vae.enable_slicing()\n'
             '        if hasattr(self.pipeline.unet, "use_dino")', 1)
-        self.assertEqual(self._patch(text=pre).count("slicing ENABLED"), 1)
+        out = self._patch(text=pre)
+        self.assertEqual(out.count("enable_slicing()"), 1)
+        self.assertEqual(out.count("EB_VAE_SLICING"), 1)
 
 
 if __name__ == "__main__":

@@ -703,6 +703,19 @@ class Hunyuan3DShapeV21Generator(BaseGenerator):
             os.environ["EB_CPU_OFFLOAD"] = "phase"
         else:
             os.environ.pop("EB_CPU_OFFLOAD", None)
+        # VAE slicing (section 8e), on only when the run is expected to press against
+        # the budget. Measured on a 3090 at the reduced tier: slicing never changes the
+        # ALLOCATED peak — the view-batch decode is not the high-water mark — but it cuts
+        # the allocator's RESERVED footprint, which is the figure that has to fit in VRAM
+        # plus shared memory. At 768 that is 28.4 -> 24.3 GB and the run is 9% FASTER,
+        # because the unsliced version pages over PCIe. At 512 it saves 0.68 GB and costs
+        # 7.5%, so leaving it on everywhere would tax the common case to help the tight
+        # one. _plan.warning covers both tight cases: over budget outright, and fitting
+        # only by paging into shared memory.
+        if _plan.warning or tex_resolution >= 768:
+            os.environ["EB_VAE_SLICING"] = "on"
+        else:
+            os.environ.pop("EB_VAE_SLICING", None)
         if _plan.warning:
             print(f"[{self.MODEL_ID}] VRAM: {_plan.warning}")
             self._report(progress_cb, 62, _plan.warning)
@@ -1330,9 +1343,26 @@ class Hunyuan3DShapeV21Generator(BaseGenerator):
             # different convolution algorithm at batch 1 than at batch N, which
             # moves fp16 results by an ULP or so. Anchored on the use_dino line
             # because it is stable whether or not 8a has rewritten the block above.
-            old_8e = (
+            anchor_8e = (
                 '        if hasattr(self.pipeline.unet, "use_dino") and self.pipeline.unet.use_dino:')
-            new_8e = (
+            slice_block = (
+                '        # EB VAE slicing (env-gated EB_VAE_SLICING=on, default OFF): decode\n'
+                '        # the view batch one view at a time. Measured on a 3090, reduced tier:\n'
+                '        # the ALLOCATED peak is unchanged (17.69 GB either way at 768) — this\n'
+                '        # decode is not the high-water mark — but the allocator\'s RESERVED\n'
+                '        # footprint drops 28.4 -> 24.3 GB at 768, and reserved is what has to\n'
+                '        # fit in VRAM plus shared memory. Gated because at 512 it saves only\n'
+                '        # 0.68 GB and costs 7.5% time, while at 768 it also runs 9% FASTER by\n'
+                '        # staying nearer VRAM instead of paging over PCIe.\n'
+                '        if os.environ.get("EB_VAE_SLICING", "") == "on":\n'
+                '            try:\n'
+                '                self.pipeline.vae.enable_slicing()\n'
+                '                print("[eb_accel] paint VAE: slicing ENABLED")\n'
+                '            except Exception as exc:\n'
+                '                print(f"[eb_accel] VAE slicing unavailable ({exc!r})")\n')
+            # v1 of this block called enable_slicing unconditionally. Migrate it, so a
+            # source already carrying the ungated form picks up the gate.
+            ungated_v1 = (
                 '        # EB VAE slicing: decode the view batch one view at a time. Same\n'
                 '        # output (a VAE decoder has no cross-batch interaction), far lower\n'
                 '        # peak — this decode is where tight-VRAM cards run out.\n'
@@ -1340,11 +1370,14 @@ class Hunyuan3DShapeV21Generator(BaseGenerator):
                 '            self.pipeline.vae.enable_slicing()\n'
                 '            print("[eb_accel] paint VAE: slicing ENABLED")\n'
                 '        except Exception as exc:\n'
-                '            print(f"[eb_accel] VAE slicing unavailable ({exc!r})")\n'
-                '        if hasattr(self.pipeline.unet, "use_dino") and self.pipeline.unet.use_dino:')
-            if "paint VAE: slicing ENABLED" not in text and old_8e in text:
-                text = text.replace(old_8e, new_8e, 1)
-                changed = True
+                '            print(f"[eb_accel] VAE slicing unavailable ({exc!r})")\n')
+            if "EB_VAE_SLICING" not in text:
+                if ungated_v1 in text:
+                    text = text.replace(ungated_v1, slice_block, 1)
+                    changed = True
+                elif anchor_8e in text:
+                    text = text.replace(anchor_8e, slice_block + anchor_8e, 1)
+                    changed = True
 
             if changed:
                 mu.write_text(text, encoding="utf-8")
