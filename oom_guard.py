@@ -22,10 +22,22 @@ def is_cuda_oom(exc: BaseException) -> bool:
     """True if `exc` is a GPU out-of-memory failure.
 
     Both flavours qualify: the caching allocator's "CUDA out of memory. Tried
-    to allocate ..." and the driver's "CUDA error: out of memory". Requires
-    "cuda" as well as "out of memory" so a plain host-side MemoryError, which
-    needs entirely different advice, is not swept up.
+    to allocate ..." and the driver's "CUDA error: out of memory".
+
+    Host RAM exhaustion is excluded by type, not just by wording. Requiring
+    "cuda" in the text is not enough on its own: a MemoryError carrying a
+    message that happens to mention CUDA would match and send the user after
+    VRAM for a system-memory problem.
+
+    Only the exception itself is inspected, never __cause__ or __context__.
+    Walking the chain would catch an OOM re-raised inside a wrapper, but
+    __context__ is set for any exception raised while handling another, so an
+    unrelated failure that merely followed an OOM would be misreported as one
+    — and a false positive here tells the user to restart and re-download.
+    Nothing in the paint path wraps the OOM today; revisit only if that changes.
     """
+    if isinstance(exc, MemoryError):
+        return False
     text = f"{type(exc).__name__}: {exc}".lower()
     return "out of memory" in text and "cuda" in text
 

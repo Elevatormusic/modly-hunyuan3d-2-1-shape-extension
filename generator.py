@@ -1323,9 +1323,12 @@ class Hunyuan3DShapeV21Generator(BaseGenerator):
             # it is where 12 GB cards die (autoencoder_kl _decode -> decoder ->
             # group_norm). enable_slicing() makes AutoencoderKL.decode split the
             # batch with z.split(1), decode each view, and torch.cat the results.
-            # A VAE decoder has no cross-batch interaction, so that is the same
-            # arithmetic per view: the output is unchanged and only the activation
-            # peak drops, by roughly the view count. Anchored on the use_dino line
+            # The decoder is Conv2d + GroupNorm + SiLU + per-sample attention with
+            # no BatchNorm, so nothing mixes samples: decoding view-by-view is the
+            # same arithmetic per view and the peak drops by roughly the view count.
+            # Numerically equivalent rather than bit-identical — cuDNN can pick a
+            # different convolution algorithm at batch 1 than at batch N, which
+            # moves fp16 results by an ULP or so. Anchored on the use_dino line
             # because it is stable whether or not 8a has rewritten the block above.
             old_8e = (
                 '        if hasattr(self.pipeline.unet, "use_dino") and self.pipeline.unet.use_dino:')

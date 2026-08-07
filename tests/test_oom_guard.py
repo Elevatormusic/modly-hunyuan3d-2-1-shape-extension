@@ -21,6 +21,24 @@ class TestIsCudaOom(unittest.TestCase):
         self.assertFalse(oom_guard.is_cuda_oom(MemoryError()))
         self.assertFalse(oom_guard.is_cuda_oom(MemoryError("out of memory")))
 
+    def test_host_memory_error_excluded_by_type_not_wording(self):
+        # Text matching alone would accept this and send the user after VRAM
+        # for a system-memory problem.
+        self.assertFalse(oom_guard.is_cuda_oom(MemoryError("CUDA out of memory somehow")))
+
+    def test_does_not_follow_the_exception_chain(self):
+        # __context__ is set for ANY exception raised while handling another, so
+        # following it would report an unrelated later failure as an OOM — and a
+        # false positive here tells the user to restart and re-download.
+        try:
+            try:
+                raise RuntimeError(DRIVER_OOM)
+            except RuntimeError:
+                raise ValueError("mesh export failed")
+        except ValueError as exc:
+            self.assertIsNotNone(exc.__context__)
+            self.assertFalse(oom_guard.is_cuda_oom(exc))
+
     def test_ignores_unrelated_cuda_error(self):
         self.assertFalse(oom_guard.is_cuda_oom(
             RuntimeError("CUDA error: no kernel image is available for execution")))
