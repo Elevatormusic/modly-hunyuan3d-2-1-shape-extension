@@ -1318,6 +1318,31 @@ class Hunyuan3DShapeV21Generator(BaseGenerator):
                 text = text.replace(old_8d, new_8d, 1)
                 changed = True
 
+            # 8e. VAE slicing, always on. The multiview decode runs every view in a
+            # single batch, and that one decode is the paint stage's memory peak —
+            # it is where 12 GB cards die (autoencoder_kl _decode -> decoder ->
+            # group_norm). enable_slicing() makes AutoencoderKL.decode split the
+            # batch with z.split(1), decode each view, and torch.cat the results.
+            # A VAE decoder has no cross-batch interaction, so that is the same
+            # arithmetic per view: the output is unchanged and only the activation
+            # peak drops, by roughly the view count. Anchored on the use_dino line
+            # because it is stable whether or not 8a has rewritten the block above.
+            old_8e = (
+                '        if hasattr(self.pipeline.unet, "use_dino") and self.pipeline.unet.use_dino:')
+            new_8e = (
+                '        # EB VAE slicing: decode the view batch one view at a time. Same\n'
+                '        # output (a VAE decoder has no cross-batch interaction), far lower\n'
+                '        # peak — this decode is where tight-VRAM cards run out.\n'
+                '        try:\n'
+                '            self.pipeline.vae.enable_slicing()\n'
+                '            print("[eb_accel] paint VAE: slicing ENABLED")\n'
+                '        except Exception as exc:\n'
+                '            print(f"[eb_accel] VAE slicing unavailable ({exc!r})")\n'
+                '        if hasattr(self.pipeline.unet, "use_dino") and self.pipeline.unet.use_dino:')
+            if "paint VAE: slicing ENABLED" not in text and old_8e in text:
+                text = text.replace(old_8e, new_8e, 1)
+                changed = True
+
             if changed:
                 mu.write_text(text, encoding="utf-8")
                 print(f"[{__name__}] patched phase offload into multiview_utils.py")
