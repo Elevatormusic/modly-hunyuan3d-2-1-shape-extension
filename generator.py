@@ -703,6 +703,19 @@ class Hunyuan3DShapeV21Generator(BaseGenerator):
             os.environ["EB_CPU_OFFLOAD"] = "phase"
         else:
             os.environ.pop("EB_CPU_OFFLOAD", None)
+        # VAE slicing (section 8e), on only when the run is expected to press against
+        # the budget. Measured on a 3090 at the reduced tier: slicing never changes the
+        # ALLOCATED peak — the view-batch decode is not the high-water mark — but it cuts
+        # the allocator's RESERVED footprint, which is the figure that has to fit in VRAM
+        # plus shared memory. At 768 that is 28.4 -> 24.3 GB and the run is 9% FASTER,
+        # because the unsliced version pages over PCIe. At 512 it saves 0.68 GB and costs
+        # 7.5%, so leaving it on everywhere would tax the common case to help the tight
+        # one. _plan.warning covers both tight cases: over budget outright, and fitting
+        # only by paging into shared memory.
+        if _plan.warning or tex_resolution >= 768:
+            os.environ["EB_VAE_SLICING"] = "on"
+        else:
+            os.environ.pop("EB_VAE_SLICING", None)
         if _plan.warning:
             print(f"[{self.MODEL_ID}] VRAM: {_plan.warning}")
             self._report(progress_cb, 62, _plan.warning)
@@ -828,6 +841,17 @@ class Hunyuan3DShapeV21Generator(BaseGenerator):
                         print(f"[{self.MODEL_ID}] game-ready GLB -> {out_path}")
                 except Exception as exc:
                     print(f"[{self.MODEL_ID}] game-ready step skipped ({exc})")
+        except Exception as exc:
+            # A paint-stage OOM otherwise surfaces as a raw CUDA traceback from
+            # inside the VAE decode, naming no setting the user can act on.
+            import oom_guard
+            if not oom_guard.is_cuda_oom(exc):
+                raise
+            raise RuntimeError(oom_guard.advice(
+                tex_resolution=tex_resolution, max_num_view=max_num_view,
+                shared_on=use_shared_vram, tier=_plan.tier,
+                lost_context=oom_guard.context_lost(exc),
+                planner_warning=_plan.warning)) from exc
         finally:
             try:
                 import eb_accel
@@ -835,8 +859,15 @@ class Hunyuan3DShapeV21Generator(BaseGenerator):
             except Exception:
                 pass
             del paint_pipeline
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
+            # Guarded: a driver-level OOM poisons the CUDA context, so this call
+            # raises too. Unguarded in a finally it would replace the real error
+            # with a cleanup traceback AND skip the scratch-dir removal below,
+            # reinstating the %TEMP% leak that removal exists to prevent.
+            try:
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+            except Exception as _exc:
+                print(f"[{self.MODEL_ID}] empty_cache skipped ({_exc})")
             # Remove the paint scratch dir (shape.glb + cond.png + textured.obj/.mtl
             # + texture maps, ~15-25 MB/gen). It leaked to %TEMP% every run. Runs
             # after finishing.finish() (which reads textured.* for the QA sheet), and
@@ -1299,6 +1330,54 @@ class Hunyuan3DShapeV21Generator(BaseGenerator):
             if "_eb_ph = os.environ.get" not in text and old_8d in text:
                 text = text.replace(old_8d, new_8d, 1)
                 changed = True
+
+            # 8e. VAE slicing, always on. The multiview decode runs every view in a
+            # single batch, and that one decode is the paint stage's memory peak —
+            # it is where 12 GB cards die (autoencoder_kl _decode -> decoder ->
+            # group_norm). enable_slicing() makes AutoencoderKL.decode split the
+            # batch with z.split(1), decode each view, and torch.cat the results.
+            # The decoder is Conv2d + GroupNorm + SiLU + per-sample attention with
+            # no BatchNorm, so nothing mixes samples: decoding view-by-view is the
+            # same arithmetic per view and the peak drops by roughly the view count.
+            # Numerically equivalent rather than bit-identical — cuDNN can pick a
+            # different convolution algorithm at batch 1 than at batch N, which
+            # moves fp16 results by an ULP or so. Anchored on the use_dino line
+            # because it is stable whether or not 8a has rewritten the block above.
+            anchor_8e = (
+                '        if hasattr(self.pipeline.unet, "use_dino") and self.pipeline.unet.use_dino:')
+            slice_block = (
+                '        # EB VAE slicing (env-gated EB_VAE_SLICING=on, default OFF): decode\n'
+                '        # the view batch one view at a time. Measured on a 3090, reduced tier:\n'
+                '        # the ALLOCATED peak is unchanged (17.69 GB either way at 768) — this\n'
+                '        # decode is not the high-water mark — but the allocator\'s RESERVED\n'
+                '        # footprint drops 28.4 -> 24.3 GB at 768, and reserved is what has to\n'
+                '        # fit in VRAM plus shared memory. Gated because at 512 it saves only\n'
+                '        # 0.68 GB and costs 7.5% time, while at 768 it also runs 9% FASTER by\n'
+                '        # staying nearer VRAM instead of paging over PCIe.\n'
+                '        if os.environ.get("EB_VAE_SLICING", "") == "on":\n'
+                '            try:\n'
+                '                self.pipeline.vae.enable_slicing()\n'
+                '                print("[eb_accel] paint VAE: slicing ENABLED")\n'
+                '            except Exception as exc:\n'
+                '                print(f"[eb_accel] VAE slicing unavailable ({exc!r})")\n')
+            # v1 of this block called enable_slicing unconditionally. Migrate it, so a
+            # source already carrying the ungated form picks up the gate.
+            ungated_v1 = (
+                '        # EB VAE slicing: decode the view batch one view at a time. Same\n'
+                '        # output (a VAE decoder has no cross-batch interaction), far lower\n'
+                '        # peak — this decode is where tight-VRAM cards run out.\n'
+                '        try:\n'
+                '            self.pipeline.vae.enable_slicing()\n'
+                '            print("[eb_accel] paint VAE: slicing ENABLED")\n'
+                '        except Exception as exc:\n'
+                '            print(f"[eb_accel] VAE slicing unavailable ({exc!r})")\n')
+            if "EB_VAE_SLICING" not in text:
+                if ungated_v1 in text:
+                    text = text.replace(ungated_v1, slice_block, 1)
+                    changed = True
+                elif anchor_8e in text:
+                    text = text.replace(anchor_8e, slice_block + anchor_8e, 1)
+                    changed = True
 
             if changed:
                 mu.write_text(text, encoding="utf-8")
